@@ -2,7 +2,7 @@
 .SYNOPSIS
     Finds unused EC2 security groups.
 .DESCRIPTION
-    Searches EC2 security groups for a given region and finds any that are highly likely to not be in use. For eacg security group in the region checks to see whether the group contains any EC2 instances, whether it is associated with any ELB or whether its used by any RDS instance.
+    Searches EC2 security groups for a given region and finds any that are highly likely to not be in use. For each security group in the region checks to see whether the group contains any EC2 instances, whether it is associated with any ELB or whether its used by any RDS instance.
 .PARAMETER Region
     The AWS region to check for empty security groups. 
 .PARAMETER ProfileName
