@@ -25,7 +25,7 @@
     CREATED...:  10/1/14
 .EXAMPLE
     Get-UnusedSecurityGroups -Region 'us-east-1'
-    Checks EC2 security groups in the region 'us-east-1' to find any groups that are likely not in use by checking whether the group is used by any EC2 instance, ELB or RDS instance.
+    Checks EC2 security groups in the region 'us-east-1' to find any groups that are likely not in use by checking whether the group is used by any EC2 instance, ELB or RDS instance. 
 #>
 function Get-UnusedSecurityGroups
 {
