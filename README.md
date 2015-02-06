@@ -86,5 +86,11 @@ Once you have finished using credentials, you can remove them from the profile u
 ##IAM Permissions
 To use these functions it is assumed that you have IAM keys that provide Full Access to all AWS services. Many of the functions provide the ability to manage critical services (IAM/EC2/Trusted Advisor). In addition almost all functions require at least read-access for IAM (which is not typical for most users) in order to allow the function to confirm the AWS account number (since there are no other native mechanisms to do this)
 
+##To Do
+Add the following functions:
 
+Add-AMIPermissions
+Add-AWSEgressRule​
+Get-AWSEgressRules
+Update-AWSIAMGroup
 
