@@ -89,8 +89,8 @@ To use these functions it is assumed that you have IAM keys that provide Full Ac
 ##To Do
 Add the following functions:
 
-  Add-AMIPermissions
-  Add-AWSEgressRule​
-  Get-AWSEgressRules
-  Update-AWSIAMGroup
+Add-AMIPermissions  
+Add-AWSEgressRule  
+Get-AWSEgressRules  
+Update-AWSIAMGroup  
 
