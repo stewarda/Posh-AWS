@@ -94,3 +94,5 @@ Add-AWSEgressRule
 Get-AWSEgressRules  
 Update-AWSIAMGroup  
 
+Update New-AWSIAMGroup (help)
+
