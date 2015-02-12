@@ -2807,9 +2807,6 @@ function New-RandomComplexPassword
 .EXAMPLE
     New-AWSIAMGroup -Groupname 'MYGROUP'
     Checks for the IAM group MYGROUP, if it is not found, creates the new IAM group using the default path (/A360/).
-.EXAMPLE
-    New-AWSIAMUser -Username 'MYUSER,MYUSER1,MYUSER2' 
-    Search for the IAM accounts MYUSER,MYUSER1,MYUSER2 in the AWS account.
 #>
 function New-AWSIAMGroup
 {
