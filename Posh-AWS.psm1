@@ -1075,7 +1075,7 @@ function Set-AWSIAMPasswordPolicy
     Param (
         [Parameter(Mandatory=$false,HelpMessage="Define whether users can use the IAM console to change their own passwords (default value is true).")]
         [ValidateNotNullOrEmpty()]
-        [string]
+        [bool]
         $AllowUsersToChangePassword = $True,
 
         [Parameter(Mandatory=$false,HelpMessage="Enter minimum number of characters allowed in an IAM user password (6 to 128 characters - default value is 12).")]
