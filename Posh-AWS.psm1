@@ -1,246 +1,5 @@
 <#
 .SYNOPSIS
-    Finds unused EC2 security groups. 
-.DESCRIPTION
-    Searches EC2 security groups for a given region and finds any that are highly likely to not be in use. For each security group in the region checks to see whether the group contains any EC2 instances, whether it is associated with any ELB or whether its used by any RDS instance.
-.PARAMETER Region
-    The AWS region to check for empty security groups. 
-.PARAMETER ProfileName
-    The name of the AWS profile to use for the operation.
-.OUTPUTS
-    Returns $EmptyGroups which is an array of PS objects containing the following information:
-    AWSAccountNumber:       The AWS account number that contains the EC2 security group.
-    AWSAccountName:         The AWS account name that contains the EC2 security group.
-    AWSRegion:              The AWS region containing the EC2 security group.
-    GroupName:              The name of the EC2 security group.
-    GroupID:                The ID of the EC2 security group.
-    VPCID:                  The VPCID of the EC2 security group.
-    InstancesinGroup:       The number of EC2 instances that are members of the EC2 security group.
-    RDSGroup:               Whether the EC2 security group is used by an RDS instance (TRUE/FALSE)
-    ELBGroup:               Whether the EC2 security group is used by an ELB (TRUE/FALSE)
-.NOTES
-    NAME......:  Get-UnusedSecurityGroups
-    VERSION...:  1.0
-    AUTHOR....:  Dan Stewart
-    CREATED...:  10/1/14
-.EXAMPLE
-    Get-UnusedSecurityGroups -Region 'us-east-1'
-    Checks EC2 security groups in the region 'us-east-1' to find any groups that are likely not in use by checking whether the group is used by any EC2 instance, ELB or RDS instance. 
-#>
-function Get-UnusedSecurityGroups
-{
-    [CmdletBinding()]
-    param ( 
-        [Parameter(Mandatory=$true,HelpMessage="The system name of the AWS region in which the operation should be invoked. For example: us-east-1")]
-        [ValidateSet("us-east-1","us-west-1","us-west-2","eu-west-1","eu-central-1","ap-northeast-1","ap-southeast-1","ap-southeast-2","sa-east-1")] 
-        [String]
-        $Region,
-
-        [Parameter(Mandatory=$true,HelpMessage="Enter the name of the AWS profile to use for the operation.")]
-        [String]
-        $ProfileName
-    ) 
-
-    # Return variable containing all security groups for a given region.
-    $SecurityGroups = Get-EC2SecurityGroup -Region $Region -Profile $ProfileName
-
-    if ($SecurityGroups)
-    {
-        write-verbose "Found $($SecurityGroups.count) Security Groups in Region: $Region"
-        
-        # Empty array used to contain PS objects with information about empty groups
-        $EmptyGroups = @()
-
-        foreach ($SecurityGroup in $SecurityGroups)
-        {
-            $NumberInstancesinGroup = ((get-ec2instance -region $region -ProfileName $ProfileName).instances | where { $($_.securitygroups).GroupName -eq "$($SecurityGroup.GroupName)" } ).count
-           
-            if ($NumberInstancesinGroup -eq 0)
-            {
-                write-verbose "Security Group: $($SecurityGroup.GroupName) ($($SecurityGroup.GroupID)) does not contain instances."
-            }
-
-            else
-            {
-                write-verbose "Security Group: $($SecurityGroup.GroupName) ($($SecurityGroup.GroupID)) contains: $NumberInstancesinGroup instances."
-            }
-
-            if (!(Get-ELBLoadBalancer -region $region -ProfileName $ProfileName | select -expand sourcesecuritygroup | where { $_.groupname -eq $($SecurityGroup.GroupName) } ))
-            {
-                write-verbose "Security Group: $($SecurityGroup.GroupName) ($($SecurityGroup.GroupID)) is not used by ELBs."
-                $ELBGroup = 'FALSE'
-            }
-
-            else 
-            {
-               write-verbose "Security Group: $($SecurityGroup.GroupName) ($($SecurityGroup.GroupID)) is used by ELB"
-               $ELBGroup = 'TRUE'
-            }
-
-            if (!($(Get-RDSDBInstance -region $region -ProfileName $ProfileName).VpcSecurityGroups | where { $_.VpcSecurityGroupId -eq $($SecurityGroup.GroupID) } ))
-            {
-                write-verbose "Security Group: $($SecurityGroup.GroupName) ($($SecurityGroup.GroupID)) is not used by RDS."
-                $RDSGroup = 'FALSE'                
-            }
-
-            else 
-            {
-                write-verbose "Security Group: $($SecurityGroup.GroupName) ($($SecurityGroup.GroupID)) is used by RDS."
-                $RDSGroup = 'TRUE'                
-            }
-
-            $VPCID = $($SecurityGroup.VPCID)
-
-            if (!($VPCID))
-            {
-                $VPCID = 'NONE'
-            }
-
-            # Return AWS account number from account
-            $RegexAccountNumber = $((Get-IAMUser -ProfileName $ProfileName).arn) -match "(\d+)" | Out-Null; 
-            $AccountNumber = $Matches[0]
-
-            # Create object, populate information return from function
-            $EmptyGroup = [ordered]  @{
-                                AWSAccountNumber="$AccountNumber";
-                                AWSAccountName="$ProfileName";
-                                AWSRegion="$Region";       
-                                GroupName="$($SecurityGroup.GroupName)";  
-                                GroupID="$($SecurityGroup.GroupId)";
-                                VPCID="$VPCID"
-                                InstancesInGroup="$NumberInstancesinGroup"
-                                ELBGroup="$ELBGroup";
-                                RDSGroup="$RDSGroup"
-                                } 
-
-            $EmptyGroupGroupobject = New-Object -Type PSObject -Prop $EmptyGroup
-            $EmptyGroups += $EmptyGroupGroupobject
-        }
-
-        $EmptyGroups
-    }
-
-    else 
-    {
-        
-        write-verbose "No Security Groups Found in region: $region" 
-         
-    } 
-}
-<#
-.SYNOPSIS
-    Finds open EC2 security groups.
-.DESCRIPTION
-    Queries Trusted Advisor to find security groups that have rules allowing access from 0.0.0.0/0. Trusted Advisor is not a region specific service, so information is for all regions in the AWS account.
-.PARAMETER ProfileName
-    The name of the AWS profile to use for the operation.
-.OUTPUTS
-    Returns $OpenGroups which is an array of PS objects containing the following information:
-    AWSAccountNumber:       The AWS account number that contains the EC2 security group.
-    AWSAccountName:         The AWS account name that contains the EC2 security group.
-    AWSRegion:              The AWS region containing the EC2 security group.
-    GroupName:              The name of the EC2 security group.
-    GroupID:                The ID of the EC2 security group.
-    VPCID:                  The VPCID of the EC2 security group.
-    Protocol:               The protocol for the open rule in the EC2 security group.
-    Port:                   The port of the open rule in the EC2 security group.
-    SourceIP:               The source IP for the open rule (will be 0.0.0.0/0)
-    InstancesinGroup:       The number of EC2 instances in the open group, this can be used to prioritise remediation
-    TotalInstances:         The total number of EC2 instances in the region, used to calculate percentage of instances.
-    PercentageinGroup:      The percentage of instances in the open group for the region.
-.NOTES
-    NAME......:  Get-OpenSecurityGroups
-    VERSION...:  1.0
-    AUTHOR....:  Dan Stewart
-    CREATED...:  10/1/14
-.EXAMPLE
-    Get-OpenSecurityGroups -Region 'us-east-1'
-    Checks Trusted Advisor for EC2 security groups in the region 'us-east-1' to find any groups that are likely not in use by checking whether the group is used by any EC2 instance, ELB or RDS instance.
-#>
-function Get-OpenSecurityGroups
-{
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory=$true,HelpMessage="Enter the name of the AWS profile to use for the operation.")]
-        [String]
-        $ProfileName
-    )
-
-    $OpenSecurityGroups = Get-ASATrustedAdvisorCheckResult -Profile $ProfileName -CheckId 1iG5NDGVre | Select -expand FlaggedResources
-    $OpenGroups = @()
-
-    if ($OpenSecurityGroups)
-    {
-        foreach ($OpenSecurityGroup in $OpenSecurityGroups)
-        {
-            $SecurityGroupInfo = $OpenSecurityGroup | select -expand metadata
-            $Region = $SecurityGroupInfo[0]
-            $SecurityGroupName = $SecurityGroupInfo[1]
-            $SecurityGroupID = $SecurityGroupInfo[2]
-            $OpenRuleProtocol = $SecurityGroupInfo[3]
-            $OpenRulePort = $SecurityGroupInfo[4]
-            $OpenRuleSourceIP = $SecurityGroupInfo[6]   
-
-            if ($OpenRuleProtocol -eq "ICMP")
-            {
-                $OpenRulePort = '-1'
-            }
-
-            $Instances = (get-ec2instance -region $Region -ProfileName $ProfileName).instances  
-            $InstancesinGroup = ($Instances | where { $($_.securitygroups).GroupName -eq "$SecurityGroupName" } ).count
-            $TotalInstances = $($Instances.count)
-            
-            if ($InstancesinGroup -eq '0')
-            {
-                $PercentageinGroup = '0'
-            }
-
-            if ($TotalInstances -eq '0')
-            {
-                $TotalInstances = '0'
-            }
-            
-            else 
-            {
-                $PercentageinGroup= $("{0:N2}" -f (($InstancesinGroup/$TotalInstances)*100) ) + " %"  
-            }
-
-            write-verbose "$SecurityGroupName is open: $OpenRuleProtocol : $OpenRulePort"
-            
-            # Return AWS account number from account
-            $RegexAccountNumber = $((Get-IAMUser -ProfileName $ProfileName).arn) -match "(\d+)" | Out-Null; 
-            $AccountNumber = $Matches[0]
-
-            # Create object, populate information return from function            
-            $OpenGroup = [ordered]  @{
-                                    AWSAccountNumber="$AccountNumber";
-                                    AWSAccountName="$ProfileName"; 
-                                    AWSRegion="$Region";        
-                                    GroupName = "$SecurityGroupName";
-                                    GroupID = "$SecurityGroupID";
-                                    OpenProtocol = "$OpenRuleProtocol";
-                                    OpenPort = "$OpenRulePort";
-                                    SourceIP = "$OpenRuleSourceIP";
-                                    InstancesinGroup = "$InstancesinGroup";
-                                    TotalInstances = "$TotalInstances";
-                                    PercentageinGroup = "$PercentageinGroup"
-                                    }
-
-            $OpenGroupGroupobject = New-Object -Type PSObject -Prop $OpenGroup
-            $OpenGroups += $OpenGroupGroupobject                                       
-        }
-
-        $OpenGroups
-    }
-    
-    else 
-    {
-        write-verbose "Account contains no Open Security Groups"          
-        Return
-    }        
-}
-<#
-.SYNOPSIS
     Gets RDS instance information.
 .DESCRIPTION
     Returns information for RDS instances in a given AWS region.
@@ -260,15 +19,18 @@ function Get-OpenSecurityGroups
     DBEngineVersion:        The DB engine version of the RDS instance.
     VPCSecurityGroupName:   The VPC security group name of the RDS instance.
 .NOTES
-    NAME......:  Get-RDSInstanceinfo
+    NAME......:  Get-AWSRDSInstances
     VERSION...:  1.0
     AUTHOR....:  Dan Stewart
-    CREATED...:  10/1/14
+    CREATED...:  1/2/15
 .EXAMPLE
-    Get-RDSInstanceinfo -Region 'us-east-1'
-
+    Get-AWSRDSInstances -Region 'us-east-1' -ProfileName 'myprofile'
+    Returns an array of PS Objects containing information about all RDS instances in AWS region 'us-east-1' in the AWS account with ProfileName 'MainAWSAccount'
+.EXAMPLE
+    Get-AWSRDSInstances -Region 'us-west-1' -ProfileName 'Production' | where {$_.DBEngine -ne '5.6.21' }
+    Returns an array of PS Objects containing information about all RDS instances in AWS region 'us-west-1' in the AWS account with ProfileName 'Production' then filters the array to find any RDS instances where the DB engine version does not match '5.6.21''
 #>
-function Get-RDSInstances
+function Get-AWSRDSInstances
 {
     [CmdletBinding()]
     param ( 
@@ -286,7 +48,7 @@ function Get-RDSInstances
 
     Try
     {
-        $RDSInstances = Get-RDSDBInstance -Region $region -Profile $ProfileName     
+        $RDSInstances = Get-RDSDBInstance -Region $region -ProfileName $ProfileName     
         write-verbose "Found RDS instances in region: $region"
     }
 
@@ -301,8 +63,19 @@ function Get-RDSInstances
     foreach ($RDSInstance in $RDSInstances)
     {
         write-verbose "Found RDS instance identifier: $($RDSInstance.DBInstanceIdentifier)"
-        #$VPCSecurityGroup = get-ec2securitygroup -groupID $($RDSInstance.VpcSecurityGroups.VpcSecurityGroupId) | select -expand groupname
+        $VpcSecurityGroups = (get-ec2securitygroup -groupID $($RDSInstance.VpcSecurityGroups.VpcSecurityGroupId) -Region $region -ProfileName $ProfileName).groupname
+        $DBSecurityGroups = $($RDSInstance.DBSecurityGroups.DBSecurityGroupName)
 		$DBName = $($RDSInstance.DBName)
+
+        if (!($VpcSecurityGroups))
+        {
+            $VpcSecurityGroups = 'NONE'
+        }
+
+        if (!($DBSecurityGroups))
+        {
+            $DBSecurityGroups = 'NONE'
+        }
 		
 		if (!($DBName))
 		{
@@ -324,7 +97,8 @@ function Get-RDSInstances
                         DBIdentifier="$($RDSInstance.DBInstanceIdentifier)";
                         DBEngine="$($RDSInstance.Engine)";
                         DBEngineVersion="$($RDSInstance.EngineVersion)";
-						DBSecurityGroups="$($RDSInstance.DBSecurityGroups.DBSecurityGroupName)"
+						DBSecurityGroups="$DBSecurityGroups";
+                        VPCSecurityGroup="$VPCSecurityGroups"
                     }
             
         $RDSObj = New-Object -Type PSObject -Prop $RDSInfo                
@@ -345,7 +119,8 @@ function Get-RDSInstances
     AWSAccountNumber:       The AWS account number that contains the IAM user.
     AWSAccountName:         The AWS account name that contains the IAM user.
     IAMUserName:            The name of the IAM user.
-    IAMUserPath:            The path of the IAM user.      
+    IAMUserPath:            The path of the IAM user.   
+    IAMUserARN:             The ARN of the IAM user.   
     IAMKeys:                API keys for the IAM user.
     ConsoleAccess:          If configured, the date that console access was provisioned for the IAM user.
     MemberofGroups:         The IAM groups that the IAM user is a member of.
@@ -355,8 +130,11 @@ function Get-RDSInstances
     AUTHOR....:  Dan Stewart
     CREATED...:  10/1/14
 .EXAMPLE
-    Get-AWSIAMUsers
-    Returns an array of PS Objects containing information about all IAM users in a given AWS account.
+    Get-AWSIAMUsers -ProfileName 'TestAccount'
+    Returns an array of PS Objects containing information about all IAM users in the AWS account with ProfileName 'TestAccount'.
+.EXAMPLE
+    Get-AWSIAMUsers -ProfileName 'MainAWSAccount' | where {$_.MemberofGroups -eq 'NONE' }
+    Returns an array of PS Objects containing information about all IAM users in the AWS account with ProfileName 'MainAWSAccount' then filters the array to find any IAM users that do not have IAM group membership.
 #>
 function Get-AWSIAMUsers
 {
@@ -367,20 +145,20 @@ function Get-AWSIAMUsers
         $ProfileName
     )
     
-    $IAMUsers = Get-IAMUsers
+    $IAMUsers = Get-IAMUsers -ProfileName $ProfileName
     $AllIAMUsers = @()
 
     if ($IAMUsers)
     {
         foreach ($IAMUser in $IAMUsers)
         {
-            write-verbose "Retrieving information for IAMUser: $($IAMUser.UserName)"
+            write-verbose "Retrieving information for IAMUser: $($IAMUser.UserName)`n"
             # Define empty array for IAM Users group memberships
             $IAMUserGroups = @()
             $IAMUserKeys = @()
 
             # Find any groups that the IAMuser is a member of
-            $MemberofGroups = Get-IAMGroupForUser $($IAMUser.UserName) -ProfileName $ProfileName
+            $MemberofGroups = Get-IAMGroupForUser -Username $($IAMUser.UserName) -ProfileName $ProfileName
 
             if ($MemberofGroups)
             {
@@ -401,7 +179,7 @@ function Get-AWSIAMUsers
             # Return information about whether user has console access, if no profile is found set variable to "NO"
             Try 
             {
-               $ConsoleAccessDate = Get-IAMLoginProfile $($IAMUser.UserName) -ProfileName $ProfileName | select -expand CreateDate
+               $ConsoleAccessDate = Get-IAMLoginProfile -username $($IAMUser.UserName) -ProfileName $ProfileName | select -expand CreateDate
                $ConsoleAccess = "YES, Created: $ConsoleAccessDate"
                write-verbose "IAMUser has console access."
             }
@@ -415,7 +193,7 @@ function Get-AWSIAMUsers
             # Return information about whether user has API access keys, if no keys are found set variable to "NO"
             Try 
             {
-               $UserKeys = Get-IAMAccessKey $($IAMUser.UserName) -ProfileName $ProfileName
+               $UserKeys = Get-IAMAccessKey -username $($IAMUser.UserName) -ProfileName $ProfileName
 
                foreach ($UserKey in $UserKeys)
                {
@@ -441,6 +219,7 @@ function Get-AWSIAMUsers
                             AWSAccountName="$ProfileName"; 
                             IAMUserName="$($IAMUser.username)";
                             IAMUserPath="$($IAMUser.path)";
+                            IAMUserARN="$($IAMUser.arn)";
                             IAMKeys="$IAMUserKeys";
                             ConsoleAccess="$ConsoleAccess";
                             MemberofGroups="$IAMUserGroups"
@@ -450,6 +229,7 @@ function Get-AWSIAMUsers
             $IAMUserInfoObj = New-Object -Type PSObject -Prop $IAMUserInfo
             $AllIAMUsers += $IAMUserInfoObj
         }
+        
         $AllIAMUsers
     }
 
@@ -477,10 +257,13 @@ function Get-AWSIAMUsers
     NAME......:  Get-AWSIAMGroups
     VERSION...:  1.0
     AUTHOR....:  Dan Stewart
-    CREATED...:  10/1/14
+    CREATED...:  1/5/15
 .EXAMPLE
-    Get-AWSIAMGroups
-    Returns an array of PS Objects containing information about all IAM users in a given AWS account.
+    Get-AWSIAMGroups -ProfileName 'DevAccount'
+    Returns an array of PS Objects containing information about all IAM groups in the AWS account with ProfileName 'DevAccount'.
+.EXAMPLE
+    (Get-AWSIAMGroups -ProfileName 'Account1' | where {$_.IAMGroupPath -ne 'Account1' }).IAMGroupName
+    Returns an array of PS Objects containing information about all IAM groups in the AWS account with ProfileName 'Account1', then filters the array to find any that do not have the group path 'Account1' and returns a list of groupnames.
 #>
 function Get-AWSIAMGroups
 {
@@ -491,7 +274,7 @@ function Get-AWSIAMGroups
         $ProfileName
     )
 
-    $IAMGroups = Get-IAMGroups
+    $IAMGroups = Get-IAMGroups -ProfileName $ProfileName
     $AllIAMGroups = @()
 
     if ($IAMGroups)
@@ -501,7 +284,7 @@ function Get-AWSIAMGroups
             write-verbose "Retrieving information for IAMGroup: $($IAMGroup.GroupName)"
             
             $IAMGroupMembers = @()
-            $MembersofIAMGroup = ((get-iamgroup $($IAMGroup.GroupName) -ProfileName $ProfileName).users | select -expand Username)
+            $MembersofIAMGroup = ((get-iamgroup -groupname $($IAMGroup.GroupName) -ProfileName $ProfileName).users | select -expand Username)
 
             if ($MembersofIAMGroup)
             {
@@ -514,11 +297,11 @@ function Get-AWSIAMGroups
 
             else 
             {
-                $IAMGroupMembers = 'EMPTY'
-                write-verbose "IAMGroup is: $IAMGroupMembers"
+                $IAMGroupMembers = 0
+                write-verbose "IAMGroup is Empty"
             }
 
-            $GroupPolicies = Get-IAMGroupPolicies $($IAMGroup.GroupName)
+            $GroupPolicies = Get-IAMGroupPolicies -groupname $($IAMGroup.GroupName) -ProfileName $ProfileName
 
             if (!($GroupPolicies))
             {
@@ -537,9 +320,8 @@ function Get-AWSIAMGroups
                                 IAMGroupName="$($IAMGroup.GroupName)";
                                 IAMGroupPath="$($IAMGroup.Path)";
                                 GroupPolicies="$GroupPolicies";
-                                MembersofGroup="$IAMGroupMembers"
+                                MembersofGroup="$($IAMGroupMembers -join",")"
                             }
-
 
             $IAMGroupObj = New-Object -Type PSObject -Prop $IAMGroupInfo
             $AllIAMGroups += $IAMGroupObj
@@ -573,6 +355,8 @@ function Get-AWSIAMGroups
     KeyName:                The name keypair used to launch the EC2 instance.
     PrivateIP:              The private IP address of the EC2 instance.
     PublicIP:               The public IP address of the EC2 instance.
+    SecurityGroups:         An array of security groups that the EC2 instance is in.
+    SubnetID:               The SubnetID of the EC2 instance (if in a VPC).
     VPCID:                  The VPCID of the EC2 instance (if in a VPC).
     State:                  The state of the EC2 instance. 
     LaunchTime:             The date when the EC2 instance was first launched.
@@ -582,7 +366,11 @@ function Get-AWSIAMGroups
     AUTHOR....:  Dan Stewart
     CREATED...:  10/1/14
 .EXAMPLE
-    Get-EC2Instances -Region 'us-east-1'
+    Get-AWSEC2Instances -Region 'us-east-1' -ProfileName 'ProdAccount1'
+    Returns an array of PS Objects containing information about all EC2 instances in AWS region 'us-east-1' in the AWS account with ProfileName 'ProdAccount1'
+.EXAMPLE
+    Get-AWSEC2Instances -Region 'us-west-2' -ProfileName 'DevAccount' | where {$_.NameTag -eq 'Webserver' }
+    Returns an array of PS Objects containing information about all ELB's in AWS region 'us-west-2' in the AWS account with ProfileName 'DevAccount' and then filters the pipeline output to find those that have the NameTag 'WebServer'.
 #>
 function Get-AWSEC2Instances
 {
@@ -598,8 +386,8 @@ function Get-AWSEC2Instances
         $ProfileName
     ) 
 
-    $EC2Instances = (get-ec2instance -region $Region -ProfileName $ProfileName).instances       
-    $AllEC2Instances = @()
+    $EC2Instances = (get-ec2instance -region $Region -ProfileName $ProfileName).instances 
+    $AllEC2Instances = @()      
 
     if ($EC2Instances)
     {
@@ -637,6 +425,23 @@ function Get-AWSEC2Instances
 
             write-verbose "PublicIP: $PublicIP"
 
+            $AllSecurityGroups = @()
+            $SecurityGroups = $($Instance.securityGroups)
+            
+            foreach ($SecurityGroup in $SecurityGroups)
+            {
+                $SecurityGroupInfo = $($SecurityGroup.GroupName) + "($SecurityGroup.GroupID)"
+                $AllSecurityGroups += $SecurityGroup.GroupName
+            }
+            write-verbose "SecurityGroups: $AllSecurityGroups"
+
+            $SubnetID="$($Instance.SubnetId)"
+            
+            if (!($SubnetID))
+            {
+                $SubnetID = 'NONE'
+            }
+
             $VPCID="$($Instance.VpcId)"
             
             if (!($VPCID))
@@ -660,7 +465,9 @@ function Get-AWSEC2Instances
                                 NameTag="$NameTag"
                                 KeyName="$($Instance.keyname)";
                                 PrivateIP="$PrivateIP";
-                                PublicIP="$PublicIP ";
+                                PublicIP="$PublicIP";
+                                SubnetID="$SubnetID";
+                                SecurityGroups="$($AllSecurityGroups -join(","))";
                                 VPCID="$VPCID";
                                 State="$($Instance.state.name.value)";
                                 LaunchTime="$($Instance.launchtime)"
@@ -705,9 +512,13 @@ function Get-AWSEC2Instances
     NAME......:  Get-AWSELBs
     VERSION...:  1.0
     AUTHOR....:  Dan Stewart
-    CREATED...:  10/1/14
+    CREATED...:  1/18/15
 .EXAMPLE
     Get-AWSELBs -Region 'us-east-1' -ProfileName 'MyProductionAccount'
+    Returns an array of PS Objects containing information about all Elastic LoadBalancer instances in a given AWS account.
+.EXAMPLE
+    Get-AWSELBs -Region 'us-west-2' -ProfileName 'DevAccount' | where {$_.Use -eq 'Internal' }
+    Returns an array of PS Objects containing information about all ELB's in AWS region 'us-east-1' in the AWS account with ProfileName 'DevAccount' and then filters the pipeline output to find those that are used internally only.
 #>
 function Get-AWSELBs
 {
@@ -735,13 +546,20 @@ function Get-AWSELBs
             write-verbose "Found ELB name: $($ELB.Loadbalancername)"
             $ELBCertificates = @()
             $ELBInstances = ""
-
             $ELBListeners = $(($ELB.listenerdescriptions).listener)
 
             foreach ($ELBListener in $ELBListeners)
             {
-                $ELBCertificate =  $($ELBListener.SSLCertificateId)
-                $ELBCertificates += $ELBCertificate
+                if ($($ELBListener.SSLCertificateId))
+                {   
+                    $ELBCertificate = $($ELBListener.SSLCertificateId)
+                    $ELBCertificates += $ELBCertificate
+                }
+
+                else 
+                {
+                    $ELBCertificate = $Null
+                }
             }
 
             if (!($ELBCertificates))
@@ -800,14 +618,15 @@ function Get-AWSELBs
                     ELBInstances="$ELBInstances";
                     ExternalIP="$ExternalIPAddress"
                     VPCID="$VPCID";
-                    AZ="$($($ELB.AvailabilityZones) -join",")";
+                    AZ="$($ELB.AvailabilityZones -join(","))";
                     Use="$($ELB.Scheme)";
                     CreatedDate= "$($ELB.CreatedTime)"; 
-                } 
+                }
                 
             $ELBobj = New-Object -Type PSObject -Prop $ELBInfo
             $AllELBs += $ELBobj
         }
+
         $AllELBs
     }
 
@@ -835,14 +654,18 @@ function Get-AWSELBs
     CIDR:                   The CIDR block associated with the subnet.
     AZ:                     The name of the availability zone that the subnet is associated with.
     NameTag:                The name tag of the subnet (if configured).
-    InstanceIPs:            The instance IPs associated with the subnet.
+    InstanceIDs:            The instance IPs associated with the subnet.
 .NOTES
     NAME......:  Get-AWSSubnets
     VERSION...:  1.0
     AUTHOR....:  Dan Stewart
-    CREATED...:  10/1/14
+    CREATED...:  1/19/15
 .EXAMPLE
-    Get-AWSSubnets -Region 'us-east-1'
+    Get-AWSSubnets -Region 'us-west-1' -ProfileName 'MYAWSAccount'
+    Returns an array of PS Objects containing information about all EC2 instances in AWS region 'us-west-1' in the AWS account with ProfileName'MYVPCAccount'.
+.EXAMPLE
+    Get-AWSSubnets -Region 'us-east-1' -ProfileName 'MYVPCAccount' | where {$_.CIDR -eq '10.126.199.0/24' }
+    Returns a PS Object containing information about all EC2 instances in AWS region 'us-east-1' in the AWS account with ProfileName'MYVPCAccount' and then filters the pipeline output to find the subnet with CIDR '10.126.199.0/24'
 #>
 function Get-AWSSubnets
 {
@@ -1066,8 +889,8 @@ function Get-AWSIAMPasswordPolicy
     AUTHOR....:  Dan Stewart
     CREATED...:  10/1/14
 .EXAMPLE
-    Set-AWSIAMPasswordPolicy
-    Returns an array of PS Objects containing information about IAM password policy in a given AWS account.
+    Set-AWSIAMPasswordPolicy -ProfileName 'MyNewAccount'
+    Returns an array of PS Objects containing information about the newly set IAM password policy in a given AWS account.
 #>
 function Set-AWSIAMPasswordPolicy
 {
@@ -1101,7 +924,7 @@ function Set-AWSIAMPasswordPolicy
         [Parameter(Mandatory=$false,HelpMessage="Define whether the password must contain at least one of the following non-alphanumeric characters (! @ # $ % ^ & * ( ) _ + - = [ ] { } | ' - default value is true)")]
         [ValidateNotNullOrEmpty()]
         [bool]
-        $RequireSpecialCharacters = $True,
+        $RequireSymbols = $True,
 
         [Parameter(Mandatory=$false,HelpMessage="Define whether there is a maxium password age, which enables password expiration (1 to 1095 days - default value is 0, so expiration is not enabled)")]
         [ValidateNotNullOrEmpty()]
@@ -1116,8 +939,12 @@ function Set-AWSIAMPasswordPolicy
         [Parameter(Mandatory=$false,HelpMessage="Require admnistrator to reset users password after expiration. (True or False - default value is false)")]
         [ValidateNotNullOrEmpty()]
         [bool]
-        $AdminResetAfterExpired = $False
-    )
+        $AdminResetAfterExpired = $False,
+
+        [Parameter(Mandatory=$true,HelpMessage="Enter the name of the AWS profile to use for the operation.")]
+        [String]
+        $ProfileName
+    ) 
     
     # Set allow users to change password
     if (((Get-IAMAccountPasswordPolicy -ProfileName $ProfileName).AllowUsersToChangePassword) -ne $AllowUsersToChangePassword)
@@ -1192,14 +1019,14 @@ function Set-AWSIAMPasswordPolicy
     write-verbose "Require numbers: $UpdatedRequireNumbers"
 
     # Set require special characters
-    if (((Get-IAMAccountPasswordPolicy -ProfileName $ProfileName).RequireSymbols) -ne $RequireSpecialCharacters)
+    if (((Get-IAMAccountPasswordPolicy -ProfileName $ProfileName).RequireSymbols) -ne $RequireSymbols)
     {
-        $UpdatedRequireSpecialCharacters = "Updated, now set to: $RequireSpecialCharacters"
+        $UpdatedRequireSymbols = "Updated, now set to: $RequireSymbols"
     }
 
     else 
     {
-        $UpdatedRequireSpecialCharacters = "$RequireSpecialCharacters"
+        $UpdatedRequireSymbols = "$RequireSymbols"
     }
     write-verbose "Require special characters: $UpdatedRequireSpecialCharacters"
 
@@ -1225,6 +1052,7 @@ function Set-AWSIAMPasswordPolicy
     {
         $UpdatedPasswordHistory = "$PasswordHistory"
     }
+
     write-verbose "Password history to prevent reuse: $UpdatedPasswordHistory"
 
     Update-IAMAccountPasswordPolicy `
@@ -1233,10 +1061,10 @@ function Set-AWSIAMPasswordPolicy
         -MaxPasswordAge $MaxPasswordAge `
         -MinimumPasswordLength $MinPasswordLength `
         -PasswordReusePrevention $PasswordHistory `
-        -RequireLowercaseCharacters $RequireLowercaseCharacters `
+        -RequireLowercaseCharacters $RequireLowerCase `
         -RequireNumbers $RequireNumbers `
         -RequireSymbols $RequireSymbols `
-        -RequireUppercaseCharacters $RequireUppercaseCharacters `
+        -RequireUppercaseCharacters $RequireUpperCase `
         -ProfileName $ProfileName `
 
     # Return AWS account number
@@ -1252,7 +1080,7 @@ function Set-AWSIAMPasswordPolicy
                             RequireUpperCase="$UpdatedRequireUpperCase";
                             RequireLowerCase="$UpdatedRequireLowerCase";
                             RequireNumbers="$UpdatedRequireNumbers";
-                            RequireSpecialCharecters ="$UpdatedRequireSpecialCharacters";
+                            RequireSymbols ="$UpdatedRequireSymbols";
                             PasswordHistory = "$UpdatedPasswordHistory";
                             AdminResetAfterExpired="$UpdatedAdminResetAfterExpired"
                         }
@@ -1284,8 +1112,8 @@ function Set-AWSIAMPasswordPolicy
     AUTHOR....:  Dan Stewart
     CREATED...:  10/1/14
 .EXAMPLE
-    Find-EC2Instance
-    Returns an array of PS Objects containing information about all IAM users in a given AWS account.
+    Find-EC2Instance -InstanceIP '54.10.5.24'
+    Checks all AWS accounts for which PS profiles have been created and looks for an instance with the IP address '54.10.5.24'
 #>
 function Find-AWSEC2Instance
 {
@@ -1309,59 +1137,60 @@ function Find-AWSEC2Instance
         $ProfileName
     ) 
 
-    
-
-    if ($InstanceIP)
+    if (!($InstanceIP -or $InstanceID))
     {
-        write-verbose "Searching account for instance with IP: $InstanceIP"
+        $Host.UI.WriteErrorLine("`nUnable to search for instance, no IP or ID provided.`n")
+        Break  
     }
+
+    $Instances = (get-ec2instance -region $Region -ProfileName $ProfileName).instances 
+    
+    if ($Instances) 
+    {     
+        write-verbose "Checking $($Instances.count) instances in region: $Region"
+    
+        foreach ($Instance in $Instances)
+        {        
+            $FoundInstance = $Instance | Where { ($_.PrivateIpAddress -eq $InstanceIP) -or ($_.PublicIpAddress -eq $InstanceIP) -or ($_.InstanceID -eq $InstanceID) } 
+         
+            if ($FoundInstance)
+            {
+                write-verbose "Instance found"
+
+                $InstancePlatform = $($Instance.platform)
+                if (!($InstancePlatform))
+                {
+                    $InstancePlatform = 'Linux'
+                }
+                # Return AWS account number from account
+                $RegexAccountNumber = $((Get-IAMUser -ProfileName $ProfileName).arn) -match "(\d+)" | Out-Null; 
+                $AccountNumber = $Matches[0]
+
+                # Create object, populate information return from function 
+                $FoundInstanceInfo = [ordered] @{
+                                        AWSAccountNumber="$AccountNumber";
+                                        AWSAccountName="$ProfileName";
+                                        AWSRegion="$Region";  
+                                        InstanceID="$($Instance.InstanceID)";
+                                        PrivateIP="$($Instance.PrivateIpAddress)";   
+                                        PublicIP="$($Instance.PublicIpAddress)";
+                                        GroupName="$($Instance.SecurityGroups.groupname)";
+                                        Platform="$Instanceplatform";
+                                        KeyName="$($Instance.KeyName)"
+                                    }
+
+                $FoundInstanceObj = New-Object -Type PSObject -Prop $FoundInstanceInfo    
+                $FoundInstanceObj    
+            }
+        }
+
+        write-verbose "Instance not found in region: $Region" 
+    } 
 
     else 
     {
-        write-verbose "Searching account for instance with instance ID: $InstanceID"        
-    }
-    $Instances = (get-ec2instance -region $Region -ProfileName $ProfileName).instances 
-
-    
-    write-verbose "Searching: $($Instances.count) instances in region: $Region"
-    
-    foreach ($Instance in $Instances)
-    {        
-        $FoundInstance = $Instance | Where { ($_.PrivateIpAddress -eq $InstanceIP) -or ($_.PublicIpAddress -eq $InstanceIP) -or ($_.InstanceID -eq $InstanceID) } 
-     
-        if ($FoundInstance)
-        {
-            write-verbose "Instance found"
-
-            $InstancePlatform = $($Instance.platform)
-            if (!($InstancePlatform))
-            {
-                $InstancePlatform = 'Linux'
-            }
-            # Return AWS account number from account
-            $RegexAccountNumber = $((Get-IAMUser -ProfileName $ProfileName).arn) -match "(\d+)" | Out-Null; 
-            $AccountNumber = $Matches[0]
-
-            # Create object, populate information return from function 
-            $FoundInstanceInfo = [ordered] @{
-                                    AWSAccountNumber="$AccountNumber";
-                                    AWSAccountName="$ProfileName";
-                                    AWSRegion="$Region";  
-                                    InstanceID="$($Instance.InstanceID)";
-                                    InternalIP="$($Instance.PrivateIpAddress)";   
-                                    ExternalIP="$($Instance.PublicIpAddress)";
-                                    SecurityGroupName="$($Instance.SecurityGroups.groupname)";
-                                    Platform="$Instanceplatform";
-                                    KeyName="$($Instance.KeyName)"
-                                }
-
-            $FoundInstanceObj = New-Object -Type PSObject -Prop $FoundInstanceInfo    
-            Return $FoundInstanceObj
-            
-        }
-    }
-
-    write-verbose "Instance not found in region"     
+       write-verbose "No instances in region: $Region"    
+    }   
 }
 <#
 .SYNOPSIS
@@ -1388,10 +1217,10 @@ function Find-AWSEC2Instance
     NAME......:  Invoke-TrustedAdvisorChecks
     VERSION...:  1.0
     AUTHOR....:  Dan Stewart
-    CREATED...:  10/1/14
+    CREATED...:  1/5/15
 .EXAMPLE
-    Invoke-TrustedAdvisorChecks
-    Returns a PS Object containing information about Trusted Advisor checks related to security and resource usage.
+    Invoke-TrustedAdvisorChecks -ProfileName 'My Account'
+    Returns a PS Object containing information about Trusted Advisor checks related to security and resource usage in the AWS account with ProfileName 'My Account'.
 #>
 function Invoke-TrustedAdvisorChecks
 {
@@ -1559,7 +1388,7 @@ function Invoke-TrustedAdvisorChecks
 .SYNOPSIS
     Finds IAM User account(s).
 .DESCRIPTION
-    Finds IAM user account(s) in the default AWS account.
+    Searches for IAM user account(s) in AWS accounts based on PS Profiles.
 .PARAMETER ProfileName
     The name of the AWS profile to use for the operation.
 .PARAMETER UserName
@@ -1575,11 +1404,11 @@ function Invoke-TrustedAdvisorChecks
     AUTHOR....:  Dan Stewart
     CREATED...:  10/1/14
 .EXAMPLE
-    Find-AWSIAMUsers -Usernames 'MYUSER' 
+    Find-AWSIAMUsers -Usernames 'MYUSER' -ProfileName 'Account1'
     Search for the IAM accounts MYUSER in the AWS account.
 .EXAMPLE
-    Find-AWSIAMUser -Usernames 'MYUSER,MYUSER1,MYUSER2' 
-    Search for the IAM accounts MYUSER,MYUSER1,MYUSER2 in the AWS account.
+    Find-AWSIAMUser -Usernames 'MYUSER,MYUSER1,MYUSER2' -ProfileName 'Account1'
+    Search for the IAM accounts MYUSER,MYUSER1,MYUSER2 in the AWS account with ProfileName 'Account1'.
 #>
 function Find-AWSIAMUser
 {
@@ -1612,14 +1441,14 @@ function Find-AWSIAMUser
             $UserExists = $True
             $DateCreated = $($IAMUserExists.CreateDate)
             $Path = $($IAMUserExists.path)
-            $MemberOfGroups = $((Get-IAMGroupForUser $UserName -ProfileName $ProfileName).groupName -join(","))
+            $MemberOfGroups = $((Get-IAMGroupForUser -Username $UserName -ProfileName $ProfileName).groupName -join(","))
 
             if(!($MemberOfGroups))
             {
                 $MemberOfGroups = 'N/A'
             }
             
-            $Key = $((Get-IAMAccessKey $UserName -ProfileName $ProfileName).accesskeyid -join(","))
+            $Key = $((Get-IAMAccessKey -Username $UserName -ProfileName $ProfileName).accesskeyid -join(","))
 
             if ($Key)
             {
@@ -1649,26 +1478,12 @@ function Find-AWSIAMUser
             {
                 $PasswordLastUsed = 'N/A'
             }
-        }
 
-        else 
-        {
-            write-verbose "IAM User: $Username does not exist"
-            $UserExists = $False
-            $DateCreated = 'N/A'
-            $PasswordLastUsed = 'N/A'
-            $Path = 'N/A'
-            $MemberOfGroups = 'N/A'
-            $APIAccess = 'N/A'
-            $Key = 'N/A'
-            $ConsoleAccess = 'N/A'
-        } 
+            # Return AWS account number
+            $RegexAccountNumber = $((Get-IAMUser -ProfileName $ProfileName).arn) -match "(\d+)" | Out-Null; 
+            $AccountNumber = $Matches[0] 
 
-        # Return AWS account number
-        $RegexAccountNumber = $((Get-IAMUser -ProfileName $ProfileName).arn) -match "(\d+)" | Out-Null; 
-        $AccountNumber = $Matches[0] 
-
-        $FindIAMUserInfo = [ordered] @{
+            $FindIAMUserInfo = [ordered] @{
                                 AWSAccountNumber="$AccountNumber";
                                 AWSAccountName="$ProfileName";
                                 UserName="$UserName";
@@ -1682,8 +1497,15 @@ function Find-AWSIAMUser
                                 Keys="$Key";                                
                             }
 
-        $FindIAMUserObj = New-Object -Type PSObject -Prop $FindIAMUserInfo 
-        $FindIAMUsers += $FindIAMUserObj              
+            $FindIAMUserObj = New-Object -Type PSObject -Prop $FindIAMUserInfo 
+            $FindIAMUsers += $FindIAMUserObj 
+
+        }
+        
+        else 
+        {
+            write-verbose "IAM User: $Username does not exist"
+        }              
     }
     
     $FindIAMUsers
@@ -1715,6 +1537,7 @@ function Find-AWSIAMUser
     UserName:               The username of the IAM user being created.
     UserExists:             True/False as to whether the user already exists.
     Path:                   The path of the IAM user.
+    ARN:                    The ARN of the IAM user.
     AddedToGroups:          The names of the IAM groups the new user is being added to.
     APIAccess:              Whether API Keys were created.
     Key:                    The key of the API key pair for the user.
@@ -1731,10 +1554,10 @@ function Find-AWSIAMUser
     New-AWSIAMUser -Usernames 'MYUSER' -AddToGroups 'A360_Users'
     Checks for the IAM account MYUSER, if it is not found, creates the IAM User using the default Userpath (/A360/) and adds the user to IAM group A360_Users.
 .EXAMPLE
-    New-AWSIAMUser -Username 'MYUSER,MYUSER1,MYUSER2' -AddToGroups 'A360_PowerUsers'
+    New-AWSIAMUser -Username 'MYUSER,MYUSER1,MYUSER2' -AddToGroups 'A360_PowerUsers' -ProfileName 'AWSAccount'
     Checks for the IAM accounts MYUSER,MYUSER1,MYUSER2 if any of the accounts are not found, creates the IAM User using the default Userpath (/A360/) and adds the user to IAM group A360_PowerUsers.
 .EXAMPLE
-    New-AWSIAMUser -Username 'MYUSER4' -AddToGroups 'A360_PowerUsers' -ConsoleAccess
+    New-AWSIAMUser -Username 'MYUSER4' -AddToGroups 'A360_PowerUsers' -ConsoleAccess -ProfileName 'AWSAccount'
     Checks for the IAM accounts MYUSER4, if it is not found, creates the IAM User using the default Userpath (/A360/) and adds the user to IAM group A360_PowerUsers. In addition generates a complex password for console access and generates the console URL.
 #>
 function New-AWSIAMUser
@@ -1796,7 +1619,7 @@ function New-AWSIAMUser
                 $AddedToGroups = 'N/A'
             }
             
-            $Key = $((Get-IAMAccessKey $UserName -ProfileName $ProfileName).accesskeyid -join(","))
+            $Key = $((Get-IAMAccessKey -Username $UserName -ProfileName $ProfileName).accesskeyid -join(","))
 
             if ($Key)
             {
@@ -1981,7 +1804,8 @@ function New-AWSIAMUser
                                 AWSAccountNumber="$AccountNumber";
                                 AWSAccountName="$ProfileName";
                                 UserName="$UserName";
-                                UserExists="$UserExists";
+                                UserExist="$UserExists";
+                                ARN="$($NewUser.arn)";
                                 Path="$Userpath";
                                 AddedToGroups="$AddedToGroups";
                                 NotAddedToGroups="$NotAddedToGroups";
@@ -2023,7 +1847,7 @@ function New-AWSIAMUser
     AUTHOR....:  Dan Stewart
     CREATED...:  10/1/14
 .EXAMPLE
-    Remove-AWSIAMUsers -Username 'MYUSER' 
+    Remove-AWSIAMUsers -Username 'MYUSER' -ProfileName 'MyProdAccount'
     For the IAM user 'MYUSER' checks for any existing keys, groups, policies and login profiles. If any are found,
     deleted them before deleting the user account.
 #>
@@ -2055,13 +1879,13 @@ function Remove-AWSIAMUser
             write-verbose "IAM User:$Username exists"
             $UserExists = $True
     
-            $Keys = Get-IAMAccessKey $Username -ProfileName $ProfileName | select -expand AccessKeyId
+            $Keys = Get-IAMAccessKey -Username $Username -ProfileName $ProfileName | select -expand AccessKeyId
 
             if ($Keys)
             {
                 foreach ($Key in $Keys)
                 {
-                    Remove-IAMAccessKey $Username -AccessKeyId $Key -ProfileName $ProfileName -force
+                    Remove-IAMAccessKey -Username $Username -AccessKeyId $Key -ProfileName $ProfileName -force
                     write-verbose "Removed key: $Key for IAM user: $UserName"
                 }
             }
@@ -2072,13 +1896,13 @@ function Remove-AWSIAMUser
                 write-verbose "No keys found for IAM User: $UserName"
             }
 
-            $Groups = Get-IAMGroupForUser $Username -ProfileName $ProfileName | select -expand GroupName
+            $Groups = Get-IAMGroupForUser -Username $Username -ProfileName $ProfileName | select -expand GroupName
 
             if ($Groups)
             {
                 foreach ($Group in $Groups)
                 {
-                    Remove-IAMUserFromGroup $Group -username $Username -ProfileName $ProfileName -force
+                    Remove-IAMUserFromGroup -Groupname $Group -username $Username -ProfileName $ProfileName -force
                     write-verbose "Removed IAM User: $UserName from group: $Group"
                 }
             }
@@ -2089,7 +1913,7 @@ function Remove-AWSIAMUser
                write-verbose "IAM User: $UserName was not a member of any groups" 
             }
 
-            $Policies = Get-IAMUserPolicies $Username -ProfileName $ProfileName
+            $Policies = Get-IAMUserPolicies -Username $Username -ProfileName $ProfileName
 
             if ($Policies)
             {
@@ -2146,6 +1970,7 @@ function Remove-AWSIAMUser
                                 AWSAccountNumber="$AccountNumber";
                                 AWSAccountName="$ProfileName";
                                 UserName="$UserName";
+                                ARN="$($IAMUserExists.arn)";
                                 UserExists="$UserExists";
                                 RemovedKeys="$Keys";
                                 RemovedFromGroups="$Groups";
@@ -2207,15 +2032,15 @@ function Remove-AWSIAMUser
     NAME......:  Update-AWSIAMUser
     VERSION...:  1.0
     AUTHOR....:  Dan Stewart
-    CREATED...:  10/1/14
+    CREATED...:  12/27/14
 .EXAMPLE
-    Update-AWSIAMUser -Usernames 'MYUSER' -RemoveFromGroups 'A360_Users'
+    Update-AWSIAMUser -Usernames 'MYUSER' -RemoveFromGroups 'A360_Users' -ProfileName 'MyProfile'
     Checks that the IAM user MYUSER, if it is not found, creates the IAM User using the default Userpath (/A360/) and adds the user to IAM group A360_Users.
 .EXAMPLE
-    Update-AWSIAMUser -Username 'MYUSER,MYUSER1,MYUSER2' -AddToGroups 'A360_PowerUsers'
+    Update-AWSIAMUser -Username 'MYUSER,MYUSER1,MYUSER2' -AddToGroups 'A360_PowerUsers' -ProfileName 'MyProfile'
     Checks that the IAM users MYUSER,MYUSER1,MYUSER2 exist and if it does adds the IAM user to IAM group A360_PowerUsers.
 .EXAMPLE
-    Update-AWSIAMUser -Username 'MYUSER4' -ConsoleAccess
+    Update-AWSIAMUser -Username 'MYUSER4' -ConsoleAccess -ProfileName 'MyProfile'
     Verifies that the IAM user MYUSER4 exists and creates a console profile a complex password and finds the console URL.
 #>
 function Update-AWSIAMUser
@@ -2345,6 +2170,7 @@ function Update-AWSIAMUser
                             Add-IAMUserToGroup -UserName $Username -GroupName $AddToGroup -ProfileName $ProfileName
                             write-verbose "Added IAM User to Group: $AddToGroup"
                             $AddedToGroups += $AddToGroup
+                            $NotAddedToGroups = 'N/A'
                         }
 
                         Catch
@@ -2368,6 +2194,7 @@ function Update-AWSIAMUser
             if (!($AddedToGroups))
             {
                 $AddedToGroups = 'N/A'
+                $NotAddedToGroups = 'N/A'
             }
         }
 
@@ -2661,13 +2488,13 @@ function Update-AWSIAMUser
 .OUTPUTS
     Returns $Password which is a string containing the new random,complex password.
 .EXAMPLE
-    New-RandomComplexPassword -Length 10
+    New-ComplexPassword -Length 10
     Creates a new random, complex password that is 10 characters long using the pre-defined defaults (include lowercase, uppercase, numbers, special characters and no similar characters)
 .NOTES
     Script based on: http://blog.morg.nl/2014/01/generate-a-random-strong-password-in-powershell/
     (c) Morgan de Jonge CC BY SA
 #>
-function New-RandomComplexPassword
+function New-ComplexPassword
 {
     [CmdletBinding()]
     Param (
@@ -2803,10 +2630,13 @@ function New-RandomComplexPassword
     NAME......:  New-AWSIAMGroup
     VERSION...:  1.0
     AUTHOR....:  Dan Stewart
-    CREATED...:  10/1/14
+    CREATED...:  12/28/14
 .EXAMPLE
-    New-AWSIAMGroup -Groupname 'MYGROUP'
+    New-AWSIAMGroup -Groupname 'MYGROUP' -ProfileName 'MyAWSAccount'
     Checks for the IAM group MYGROUP, if it is not found, creates the new IAM group using the default path (/A360/).
+.EXAMPLE
+    New-AWSIAMUser -Username 'MYUSER,MYUSER1,MYUSER2' -ProfileName 'Account1'
+    Search for the IAM accounts MYUSER,MYUSER1,MYUSER2 in the AWS account.
 #>
 function New-AWSIAMGroup
 {
@@ -3049,19 +2879,19 @@ function Remove-AWSIAMGroup
     AUTHOR....:  Dan Stewart
     CREATED...:  1/15/15
 .EXAMPLE
-    Add-AWSIngressRule -SecurityGroupName 'MyEC2Group' -Region 'us-east-1' -SourceIP's '115.112.233.64/32' -IngressRules '22,3389'
+    Add-AWSIngressRule -SecurityGroupName 'MyEC2Group' -Region 'us-east-1' -SourceIP's '115.112.233.64/32' -IngressRules '22,3389' -ProfileName 'MyProfile'
     Adds an ingressrule to EC2SecurityGroup named 'MyEC2Group' in in AWS region 'us-east-1'. The rule allows TCP ports 22 and 3389 from source IP 115.112.233.64/26
 .EXAMPLE
-    Add-AWSIngressRule -SecurityGroupName 'MyEC2Group' -Region 'us-east-1' -SourceIP's '115.112.233.64/26' -IngressRules '27017-27019'
+    Add-AWSIngressRule -SecurityGroupName 'MyEC2Group' -Region 'us-east-1' -SourceIP's '115.112.233.64/26' -IngressRules '27017-27019' -ProfileName 'MyProfile'
     Adds an ingressrule to EC2SecurityGroup named 'MyEC2Group' in AWS region 'us-east-1'. The rule allows TCP ports 27017-27019 from source IPs 115.112.233.64/26
 .EXAMPLE
-    Add-AWSIngressRule -SecurityGroupName 'MyEC2Group' -Region 'us-west-2' -SourceIPs '115.112.233.64/26' -IngressRules '27017-27019,UDP:53'
+    Add-AWSIngressRule -SecurityGroupName 'MyEC2Group' -Region 'us-west-2' -SourceIPs '115.112.233.64/26' -IngressRules '27017-27019,UDP:53' -ProfileName 'MyProfile'
     Adds an ingressrule to EC2SecurityGroup named 'MyEC2Group' in AWS region 'us-west-2'. The rule allows TCP ports 27017-27019 and UDP port 53 from source IPs 115.112.233.64/26.
 .EXAMPLE
-    Add-AWSIngressRule -SecurityGroupName 'MyEC2Group' -Region 'us-west-1' -SourceGroupID '1234567890\sg-abcde123' -IngressRules 'ICMP'
+    Add-AWSIngressRule -SecurityGroupName 'MyEC2Group' -Region 'us-west-1' -ProfileName 'MyProfile' -SourceGroupID '1234567890\sg-abcde123' -IngressRules 'ICMP'
     Adds an ingressrule to EC2SecurityGroup named 'MyEC2Group' in AWS region 'us-west-1'. The rule allows all ICMP ports from source group sg-abcde123 in AWS account 1234567890.
 .EXAMPLE
-    Add-AWSIngressRule -SecurityGroupName 'MyEC2Group' -Region 'us-west-1' -SourceGroupID '1234567890\sg-abcde123' -IngressRules 'ICMP'
+    Add-AWSIngressRule -SecurityGroupName 'MyEC2Group' -Region 'us-west-1' -SourceGroupID '1234567890\sg-abcde123' -IngressRules 'ICMP' -ProfileName 'MyProfile'
     Adds an ingressrule to EC2SecurityGroup named 'MyEC2Group' in AWS region 'us-west-1'. The rule allows all ICMP ports from source group sg-abcde123 in AWS account 1234567890.
 #>
 function Add-AWSIngressRule
@@ -3414,8 +3244,8 @@ function Add-AWSIngressRule
             $NewIngressRuleInfo = [ordered]  @{
                                 AWSAccountNumber="$AccountNumber";
                                 AWSAccountName="$ProfileName";
-                                SecurityGroupName="$SecurityGroupName";
-                                SecurityGroupID="$SecurityGroupName";
+                                GroupName="$SecurityGroupName";
+                                GroupID="$SecurityGroupName";
                                 VPCID="$VPCID";
                                 Source="$Source";
                                 Protocol="$Protocol";
@@ -3431,13 +3261,40 @@ function Add-AWSIngressRule
 }
 <#
 .SYNOPSIS
-    Adds a security group ingress rule.
+    Checks security group rules for a specified region and profile and returns information about how the group is configured.
 .DESCRIPTION
     Adds an ingress rule for an EC2 or VPC security group  on port, protocol
 .PARAMETER Region
     The AWS region to check for empty security groups (from: us-east-1,us-west-1,us-west-2,eu-west-1,'eu-central-1,ap-northeast-1,ap-southeast-1,ap-southeast-2,sa-east-1)
 .PARAMETER ProfileName
     The name of the AWS profile to use for the operation.
+.OUTPUTS
+    Returns $AllSecurityGroups which is an array of PS objects containing the following information:
+    AWSAccountNumber:       The AWS account number that contains the security group.
+    AWSAccountName:         The AWS account name that contains the security group.
+    AWSRegion:              The AWS region containing the security group.
+    GroupName:              The name of the security group.
+    GroupDescription:       The description of the 
+    GroupID:                The ID of the security group.
+    VPCID:                  The VPCID of the security group if applicable.
+    Protocol:               The protocol of the ingress rule (TCP/UDP/ICMP)
+    FromPort:               The start port in the range of ports open in the rule.
+    ToPort:                 The end port in the range of ports open in the rule.
+    SourceGroups:           A list of source groups that are allowed access via the rule. 
+    SourceIPs:              A list of source IP addresses that are allowed access via the rule. 
+    OpenRule:               If the rule allows access from 0.0.0.0/0 (open to the internet)
+    InstancesIDsinGroup:    A list of the instance IDs in the group.
+    NumberOfInstances:      The number of instances that are members of the security group.
+    RDSGroup:               Whether the security group is used by an RDS instance (TRUE/FALSE)
+    ELBGroup:               Whether the security group is used by an ELB (TRUE/FALSE)
+.NOTES
+    NAME......:  Get-AWSIngressRules
+    VERSION...:  1.0
+    AUTHOR....:  Dan Stewart
+    CREATED...:  1/15/15
+.EXAMPLE
+    Get-AWSIngressRules -Region 'us-east-1' -ProfileName 'PRODUCTION_SPS_AMI'
+    Returns powershell objects containing information about the security groups in the AWS account with profile name 'PRODUCTION_SPS_AMI' in AWSregion 'us-east-1'
 #>
 function Get-AWSIngressRules
 {
@@ -3456,143 +3313,201 @@ function Get-AWSIngressRules
     $Groups = Get-EC2SecurityGroup -region $region -ProfileName $ProfileName 
     $AllSecurityGroups = @() 
     
-    foreach ($Group in $Groups)
-    {        
-        $AllInstancesinGroup = @()
-        $AllELBsinGroup = @()
+    if ($Groups)
+    {
+        write-verbose "Found security groups in region: $Region"
 
-        $SecurityGroupName = $Group.GroupName
-        $SecurityGroupId = $Group.GroupID
-        $SecurityGroupDescription = $Group.Description
-        $SecurityGroupVPCID = $Group.VPCID
+        foreach ($Group in $Groups)
+        {        
+            write-verbose "Checking rules for: $($Group.GroupName) ($($Group.GroupID)) "
+            $AllInstancesinGroup = @()
+            $AllELBsinGroup = @()           
 
-        $InstancesinGroups = ((get-ec2instance -region $region -ProfileName $ProfileName).instances | where { $($_.securitygroups).GroupName -eq $SecurityGroupName } )
-        $ELBsinGroup = (Get-ELBLoadBalancer -region $region -ProfileName $ProfileName) | where { $_.SecurityGroups -eq $SecurityGroupId}
-        $RDSGroup = (Get-RDSDBInstance -region $region -ProfileName $ProfileName) | where { $_.VpcSecurityGroups -eq $SecurityGroupId}
+            # Check whether group is used by instances, ELB's or RDS
+            $InstancesinGroups = ((get-ec2instance -region $region -ProfileName $ProfileName).instances | where { $($_.securitygroups).GroupName -eq $($Group.GroupName) } )
+            
+            $ELBsinGroup = (Get-ELBLoadBalancer -region $region -ProfileName $ProfileName) | where { $_.SecurityGroups -eq $($Group.GroupID) }
+            
+            $RDSGroup = (Get-RDSDBInstance -region $region -ProfileName $ProfileName) | where { $_.VpcSecurityGroups -eq $($Group.GroupID) }
 
-        if ($InstancesinGroups)
-        {
-            foreach ($InstancesinGroup in $InstancesinGroups)
+            if ($InstancesinGroups)
             {
-                $InstanceID = $InstancesinGroup.InstanceID
-                $AllInstancesinGroup += $InstanceID
-            }
-            $NumberInstances = $($InstancesinGroups.count)
-        }
-
-        else 
-        {
-            $AllInstancesinGroup = 'NONE'
-            $NumberInstances = 0
-        }
-
-        if ($ELBsinGroup)
-        {
-            foreach ($ELBinGroup in $ELBsinGroup)
-            {
-                $LoadBalancerName = $ELBinGroup.LoadBalancerName
-                $AllELBsinGroup += $LoadBalancerName -join (",")
-            }
-        }
-
-        else 
-        {
-            $AllELBsinGroup = 'NONE'
-        }
-
-        
-        if (!($RDSGroups))
-        {
-            $RDSGroups = 'NONE'
-        }
-
-        if (!($SecurityGroupVPCID))
-        {
-            $SecurityGroupVPCID = 'N/A'
-        }
-
-        foreach ($Ingressrule in $($Group.IpPermissions) )
-        {
-            $Protocol = $Ingressrule.IpProtocol
-            $FromPort = $Ingressrule.FromPort
-            $ToPort = $Ingressrule.ToPort
-
-            $AllSourceIPs = @()
-            $AllSourceGroups = @()
-
-            if ($Ingressrule.IPRanges)
-            {
-                $SourceIPs = $Ingressrule.IPRanges
-
-                foreach ($SourceIP in $SourceIPs)
+                foreach ($InstancesinGroup in $InstancesinGroups)
                 {
-                    $AllSourceIPs += $SourceIP 
+                    $InstanceID = $InstancesinGroup.InstanceID
+                    $AllInstancesinGroup += $InstanceID
+                }
+                
+                $NumberInstances = $($InstancesinGroups.count)
+            }
 
-                    if ($SourceIP -eq '0.0.0.0/0')
-                    {
-                        $OpenGroup = $True
-                    }
+            else 
+            {
+                $AllInstancesinGroup = 'NONE'
+                $NumberInstances = 0
+            }
 
-                    else 
-                    {
-                        $OpenGroup = $False
-                    }
+            if ($ELBsinGroup)
+            {
+                foreach ($ELBinGroup in $ELBsinGroup)
+                {
+                    $LoadBalancerName = $($ELBinGroup.LoadBalancerName)
+                    $AllELBsinGroup += $LoadBalancerName -join (",")
                 }
             }
 
             else 
             {
-                $AllSourceIPs = 'NONE'
+                $AllELBsinGroup = 'NONE'
             }
 
-            if ($Ingressrule.UserIdGroupPairs)
+            
+            if (!($RDSGroups))
             {
-                foreach ($SourceGroup in $Ingressrule.UserIdGroupPairs)
-                { 
-                    $SourceGroupName = $SourceGroup.GroupName
-                    $SourceGroupID = $SourceGroup.GroupID
-                    $SourceGroupInfo = $SourceGroupID + "($SourceGroupName)"
-                    $AllSourceGroups += $SourceGroupInfo
-                }
+                $RDSGroups = 'NONE'
+            }
+
+            if ($($Group.VPCID))
+            {
+                $GroupVPCID = $($Group.VPCID)
             }
 
             else 
             {
-                $AllSourceGroups = 'NONE'
+                $GroupVPCID = 'NONE'
             }
 
-            # Return AWS account number from account
-            $RegexAccountNumber = $((Get-IAMUser -ProfileName $ProfileName).arn) -match "(\d+)" | Out-Null; 
-            $AccountNumber = $Matches[0]
+            foreach ($Ingressrule in $($Group.IpPermissions) )
+            {
+                write-verbose "Checking ingress rules"
+                $Protocol = $Ingressrule.IpProtocol
+                $FromPort = $Ingressrule.FromPort
+                $ToPort = $Ingressrule.ToPort
 
-            $SecurityGroupInfo = [ordered]  @{
-                                AWSAccountNumber="$AccountNumber";
-                                AWSAccountName="$ProfileName";
-                                SecurityGroupName="$SecurityGroupName";
-                                SecurityGroupID="$SecurityGroupID";
-                                VPCID="$($Group.VPCID)";
-                                Protocol="$Protocol";
-                                FromPort="$FromPort";
-                                ToPort="$ToPort";
-                                SourceGroups="$($AllSourceGroups -join(","))";
-                                SourceIPs="$($AllSourceIPs -join(","))";
-                                OpenGroup="$OpenGroup";
-                                InstancesinGroup="$($AllInstancesinGroup -join(","))";
-                                NumberInstances="$NumberInstances";
-                                ELBsInGroup="$AllELBsinGroup";
-                                RDSGroups="$RDSGroups"
-                            }
+                $AllSourceIPs = @()
+                $AllSourceGroups = @()
 
-            $SecurityGroupObj = New-Object -Type PSObject -Prop $SecurityGroupInfo
-            $AllSecurityGroups += $SecurityGroupObj
+                if ($Protocol -eq 'icmp' -or $Protocol -eq '-1')
+                {
+                    $Protocol = 'icmp'
+                    $FromPort = 'N/A'
+                    $ToPort = 'N/A'  
+                }
+
+                if ($Ingressrule.IPRanges)
+                {
+                    $SourceIPs = $Ingressrule.IPRanges
+
+                    foreach ($SourceIP in $SourceIPs)
+                    {
+                        $AllSourceIPs += $SourceIP 
+
+                        if ($SourceIP -eq '0.0.0.0/0')
+                        {
+                            $OpenGroup = $True
+                        }
+
+                        else 
+                        {
+                            $OpenGroup = $False
+                        }
+                    }
+                }
+
+                else 
+                {
+                    $AllSourceIPs = 'NONE'
+                }
+
+                if ($Ingressrule.UserIdGroupPairs)
+                {
+                    foreach ($SourceGroup in $Ingressrule.UserIdGroupPairs)
+                    { 
+                        $SourceGroupName = $SourceGroup.GroupName
+                        $SourceGroupID = $SourceGroup.GroupID
+                        $SourceGroupInfo = $SourceGroupID + "($SourceGroupName)"
+                        $AllSourceGroups += $SourceGroupInfo
+                    }
+                }
+
+                else 
+                {
+                    $AllSourceGroups = 'NONE'
+                }
+
+                # Return AWS account number from account
+                $RegexAccountNumber = $((Get-IAMUser -ProfileName $ProfileName).arn) -match "(\d+)" | Out-Null; 
+                $AccountNumber = $Matches[0]
+
+                $SecurityGroupInfo = [ordered]  @{
+                                    AWSAccountNumber="$AccountNumber";
+                                    AWSAccountName="$ProfileName";
+                                    Region="$Region";
+                                    GroupName="$($Group.GroupName)";
+                                    GroupID="$($Group.GroupID)";
+                                    GroupDescription="$($Group.Description)"
+                                    VPCID="$GroupVPCID";
+                                    Protocol="$Protocol";
+                                    FromPort="$FromPort";
+                                    ToPort="$ToPort";
+                                    SourceGroups="$($AllSourceGroups -join(","))";
+                                    SourceIPs="$($AllSourceIPs -join(","))";
+                                    OpenRule="$OpenGroup";
+                                    InstanceIDsinGroup="$($AllInstancesinGroup -join(","))";
+                                    NumberofInstances="$NumberInstances";
+                                    ELBsInGroup="$AllELBsinGroup";
+                                    RDSGroups="$RDSGroups"
+                                }
+
+                $SecurityGroupObj = New-Object -Type PSObject -Prop $SecurityGroupInfo
+                $AllSecurityGroups += $SecurityGroupObj
+            }
+
+            if (!($($Group.IpPermissions)))
+            {
+                # Return AWS account number from account
+                $RegexAccountNumber = $((Get-IAMUser -ProfileName $ProfileName).arn) -match "(\d+)" | Out-Null; 
+                $AccountNumber = $Matches[0]
+
+                $SecurityGroupInfo = [ordered]  @{
+                                    AWSAccountNumber="$AccountNumber";
+                                    AWSAccountName="$ProfileName";
+                                    Region="$Region";
+                                    GroupName="$($Group.GroupName)";
+                                    GroupID="$($Group.GroupID)";
+                                    GroupDescription="$($Group.Description)"
+                                    VPCID="$GroupVPCID";
+                                    Protocol = 'NONE';
+                                    FromPort = 'NONE';
+                                    ToPort = 'NONE';
+                                    SourceGroups= 'NONE';
+                                    SourceIPs ='NONE';
+                                    OpenRule = 'NONE';
+                                    InstanceIDsinGroup="$($AllInstancesinGroup -join(","))";
+                                    NumberofInstances="$NumberInstances";
+                                    ELBsInGroup="$AllELBsinGroup";
+                                    RDSGroups="$RDSGroups"
+                                }
+
+                $SecurityGroupObj = New-Object -Type PSObject -Prop $SecurityGroupInfo
+                $AllSecurityGroups += $SecurityGroupObj    
+            }
         }
+
+        $AllSecurityGroups
+    }
+
+    else 
+    {
+        write-verbose "No groups in region: $Region"    
+        Return
     }
 }
 <#
 .SYNOPSIS
     Imports AWS credentials and creates profiles.
 .DESCRIPTION
-    Imports AWS credentials and creates profiles from a .csv file 
+    Imports AWS credentials and creates powershell profiles from a .csv file. During the import process validates that the process was sucessful by 
 .PARAMETER Path
     The path to the .csv file containing the credentials you want to import. The .csv file should have the following columns PSAlias,Key and Secret.
 .OUTPUTS
@@ -3616,42 +3531,65 @@ function Import-AWSProfiles
         [Parameter(Mandatory=$true,HelpMessage="Enter the path to the .csv file containing the AWS profile information you want to import.")]
         [ValidateScript({Test-Path $_ })]
         [string[]]
-        $Path  
+        $Path,
+
+        [Parameter(Mandatory=$false,HelpMessage="If the switch 'Validate' is set then the credentials will be tested by trying to return the account number from the AWS account.")]
+        [Switch]
+        $Validate
     )
 
-    $AWSProfiles = Import-Csv $Path
-    $AllPSProfiles = @()
-    write-verbose "Creating powershell profiles from: $Path"
-
-    foreach ($AWSProfile in $AWSProfiles) 
+    Try
     {
-        Set-AWSCredentials -AccessKey $($AWSProfile.AccessKey) -SecretKey $($AWSProfile.SecretKey) -StoreAs $($AWSProfile.PSAlias)            
-        Try
+        $AWSProfiles = Import-Csv $Path
+        $AllPSProfiles = @()
+        write-verbose "Creating powershell profiles from: $Path"
+
+        foreach ($AWSProfile in $AWSProfiles) 
         {
-            $RegexAccountNumber = $((Get-IAMUser -ProfileName $($AWSProfile.PSAlias)).arn) -match "(\d+)" | Out-Null; 
-            $AccountNumber = $Matches[0] 
-            $ProfileCreated = 'SUCESS'
-            write-verbose "Powershell profile: $($AWSProfile.PSAlias) Set"
+            Set-AWSCredentials -AccessKey $($AWSProfile.AccessKey) -SecretKey $($AWSProfile.SecretKey) -StoreAs $($AWSProfile.PSAlias)  
+            write-verbose "Created profile: $($AWSProfile.PSAlias) with Key: $($AWSProfile.AccessKey)"
+
+            if ($Validate)
+            {       
+                Try
+                {
+                    $RegexAccountNumber = $((Get-IAMUser -ProfileName $($AWSProfile.PSAlias)).arn) -match "(\d+)" | Out-Null; 
+                    $AccountNumber = $Matches[0] 
+                    $Validated = 'SUCESS'
+                    write-verbose "Powershell profile: $($AWSProfile.PSAlias) Set"
+                }
+
+                Catch
+                {
+                    $Host.UI.WriteErrorLine("`nUnable to create new profile: $($AWSProfile.PSAlias)`n$_.error`n")
+                    $AccountNumber = 'N/A'
+                    $Validated  = 'FAILED'
+                }        
+            }
+
+            else 
+            {
+               $AccountNumber = 'NOT TESTED'
+               $Validated  = 'NOT TESTED' 
+            }
+            
+            $NewPSProfileInfo = [ordered] @{
+                            AWSAccountNumber="$AccountNumber";
+                            PSProfileName="$($AWSProfile.PSAlias)";
+                            Valid="$Validated"
+                            }
+
+            $NewPSProfileObj = New-Object -Type PSObject -Prop $NewPSProfileInfo
+            $AllPSProfiles += $NewPSProfileObj
         }
 
-        Catch
-        {
-            $Host.UI.WriteErrorLine("`nUnable to create new profile: $($AWSProfile.PSAlias)`n$_.error`n")
-            $AccountNumber = 'N/A'
-            $ProfileCreated = 'FAILED'
-        }        
-
-        $NewPSProfileInfo = [ordered] @{
-                        AWSAccountNumber="$AccountNumber";
-                        AWSAccountName="$($AWSProfile.PSAlias)";
-                        ProfileCreated="$ProfileCreated"
-                        }
-
-        $NewPSProfileObj = New-Object -Type PSObject -Prop $NewPSProfileInfo
-        $AllPSProfiles += $NewPSProfileObj
+        $AllPSProfiles
     }
 
-    $AllPSProfiles
+    Catch
+    {
+        $Host.UI.WriteErrorLine("`nError importing .csv $Path`n$_.error`n")
+    }
 }
 <#
 .SYNOPSIS
@@ -3677,11 +3615,10 @@ function Import-AWSProfiles
     AUTHOR....:  Dan Stewart
     CREATED...:  1/5/15
 .EXAMPLE
-    Revoke-AMIPermissions -SourceRegion 'us-east-1' -AMIName 'Hardened_WINDOWS_2008_BASE_06262014' -ProfileName 'PRODUCTION_SPS_AMI' -verbose
+    Revoke-AMIPermissions -SourceRegion 'us-east-1' -AMIName 'Hardened_WINDOWS_2008_BASE_06262014' -ProfileName 'PRODUCTION_SPS_AMI'
     Finds the ID of the AMI 'Hardened_WINDOWS_2008_BASE_06262014' in AWS region 'us-east-1' and searches all other regions in the AWS account 'PRODUCTION_SPS_AMI' for any AMI's that match the name. If a match is found, all permissions (the list of other accounts the AMI has been shared with) are removed.
 .EXAMPLE
     Revoke-AMIPermissions -SR 'us-east-1' -ID 'Hardened_WINDOWS_2008_BASE_06262014' -P 'PRODUCTION_SPS_AMI' -verbose
-
     Finds the ID of the AMI 'Hardened_WINDOWS_2008_BASE_06262014' in AWS region 'us-east-1' and searches all other regions in the AWS account 'PRODUCTION_SPS_AMI' for any AMI's that match the name. If a match is found, all permissions (the list of other accounts the AMI has been shared with) are removed.
 #>
 function Revoke-AMIPermissions
@@ -3786,4 +3723,362 @@ function Revoke-AMIPermissions
     }
 
     $RemovedPermissionImages
+}
+<#
+.SYNOPSIS
+    Gets AWS account information for all profiles.
+.DESCRIPTION
+    Returns array of PS objects containing information about each account for which you have a stored profile. This can be used to find account information from either a profile name or an account number.
+.OUTPUTS
+    Returns $AllAWSAccounts which is an array of PS objects containing the following information:
+    AWSAccountNumber:       The AWS account number that contains the ELB.
+    AWSAccountName:         The AWS account name that contains the ELB.
+    AWSAccountAlias:        The IAM account alias.
+.NOTES
+    NAME......:  Get-AWSAccountInformation
+    VERSION...:  1.0
+    AUTHOR....:  Dan Stewart
+    CREATED...:  31/1/15
+.EXAMPLE
+    Get-AWSAccountInformation
+    Returns array of PS objects with information about each account you have a profile for.
+.EXAMPLE
+    Get-AWSAccountInformation | where {$_.AWSAccountNumber -eq '1234567890' }
+    Returns array a PS object with information about the AWS account with account number '1234567890'. 
+#>
+function Get-AWSAccountInformation
+{
+    [CmdletBinding()]
+    param (
+    ) 
+
+    # Empty array to add PS objects to
+    $AllAWSAccounts = @()
+    $ProfileNames = Get-AWSCredentials -ListProfiles
+
+    foreach ($ProfileName in $ProfileNames)
+    {
+        write-verbose "Obtaining AWS Account information for profile: $ProfileName"
+        
+        Try 
+        {
+            $RegexAccountNumber = $((Get-IAMUser -ProfileName $ProfileName).arn) -match "(\d+)" | Out-Null; 
+            $AccountNumber = $Matches[0]
+            
+            $AccountAlias = Get-IAMAccountAlias -ProfileName $ProfileName
+            
+            if (!($AccountAlias))
+            {
+                $AccountAlias = 'NONE'
+            }
+
+            $CredentialsWork = "TRUE"
+        }
+
+        Catch
+        {
+            $Host.UI.WriteErrorLine("`nUnable to obtain AWS account information. $_.error `n")
+            $AccountNumber = "ERROR: $_.error"
+            $AccountAlias  = "ERROR: $_.error"
+            $CredentialsWork = "FALSE"
+        }
+        
+        $AWSAccountInfo = [ordered] @{
+                            AWSAccountNumber="$AccountNumber";
+                            AWSAccountName="$ProfileName";
+                            AWSAccountAlias="$AccountAlias";
+                            CredentialsWork="$CredentialsWork"
+                        }
+
+        $AWSAccountObj = New-Object -Type PSObject -Prop $AWSAccountInfo 
+        $AllAWSAccounts += $AWSAccountObj
+    }
+
+    $AllAWSAccounts
+}
+<#
+.SYNOPSIS
+    Checks a target host for SSL certificate on specified ports and returns the certificate if found.
+.DESCRIPTION
+    Tests a target host to determine whether the specified port is listening. If a connection is established, tries to retrieve SSL certificate
+.PARAMETER Target
+    Either an IP address or FQDN for the website you want to retrieve the certificate from.
+.PARAMETER Port
+    The TCP port used by website hat is configured to use SSL.        
+.OUTPUTS
+    
+.NOTES
+    NAME......:  Get-SSLCertificate
+    AUTHOR....:  Dan Stewart
+    LAST EDIT.:  10/27/14
+    CREATED...:  10/17/14
+.EXAMPLE
+    Get-SSLCertificate -Target '10.0.0.1' -Port '443'
+    Checks to see whether there is a certificate on host IP '10.0.0.1' on port 443. If found returns the certificate information.
+.EXAMPLE    
+    Get-SSLCertificate -T '10.0.0.1' -P '443' 
+    Checks to see whether there is a certificate on host IP '54.10.20.117' on port 8443. If found returns the certificate information.  
+#>
+function Get-SSLCertificate
+{
+    [CmdletBinding()]
+    param ( 
+        [Parameter(Mandatory=$true,Position=0,HelpMessage="Enter either an IP address or FQDN for the website you want to retrieve SSL certificate information from.")]
+        [alias('t')]
+        [ValidateNotNullOrEmpty()]
+        [string] $Target,
+
+        [Parameter(Mandatory=$false,Position=1,HelpMessage="Enter the TCP port number on which to check for certificate information.")]
+        [ValidateNotNullOrEmpty()]
+        [ValidateSet("443","8443")]
+        [alias('p')]        
+        [int] $Port='443'
+    ) 
+    
+    $CertInfo = @()
+
+    if ($Target -match "^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
+    {
+        write-verbose "Attempting to resolve FQDN from IP: $Target"
+        $Hostname = [System.Net.Dns]::GetHostEntry($Target).HostName  
+        $IPAddress = $Target
+    }
+    
+    elseif ($Target -match "^.*\.\.*")
+    {
+        write-verbose "Attempting to Resolve IP address from FQDN: $Target"
+        $IPAddress = [System.Net.Dns]::GetHostEntry($Target).AddressList[0].IPAddressToString
+        $SourceHostname= [System.Net.Dns]::GetHostEntry($IPAddress).HostName
+        
+        if ($SourceHostname -like '*akamai*')
+        {
+           $IPAddress = $IPAddress + ' (Akamai)'
+        }
+        
+        elseif ($SourceHostname -like '*amazonaws.com*')
+        {
+           $IPAddress = $IPAddress + ' (AWS)'
+        }
+
+        $Hostname = $Target
+    } 
+
+    else
+    { 
+        $Host.UI.WriteErrorLine("`nThe hostname or IP address entered does not seem to be valid.`n$TargetHost`n")
+        Return
+    }
+
+    Try
+    {
+        # Check to see if the port is open or not
+        write-verbose "Checking: $Target for Certificate on Port: $Port"
+        $TCPObj = New-Object System.Net.Sockets.TcpClient
+        $TestConnection = $TCPObj.BeginConnect($Target,$Port,$null,$null)
+        $Timeout = $TestConnection.AsyncWaitHandle.WaitOne(1000,$false)
+       
+        if (!($Timeout))
+        {
+            write-verbose "Connection to: $Target on Port: $Port Timed-out"
+            Return
+        }
+
+        else 
+        {
+            $error.clear()
+            $TCPObj.EndConnect($TestConnection) | out-Null
+
+            if ($Error[0]) 
+            {
+                $Host.UI.WriteErrorLine("`nUnable to establish connection.`n$_.error`n")
+            }
+
+            else 
+            {                
+                write-verbose "Established connection on port: $Port , Checking Certificate"
+                $Connection = New-Object System.Net.Sockets.TcpClient($Target,$Port)
+                $Connection.SendTimeout = 1000
+                $Connection.ReceiveTimeout = 1000
+                $Stream = $Connection.GetStream()
+                
+                Try 
+                {
+                    # Create SSL stream to download certificate
+                    $SSlStream = New-Object System.Net.Security.SslStream($Stream,$False,([Net.ServicePointManager]::ServerCertificateValidationCallback = {$True}))
+                    $SSlStream.AuthenticateAsClient($Null)
+                    $Certificate = $SSlStream.get_remotecertificate()
+                   
+                    # Create certificate2 object from downloaded certificate
+                    $Certificate2 = New-Object system.security.cryptography.x509certificates.x509certificate2($Certificate)
+
+                    # Retrieve Valid From/To dates from certificate   
+                    $EffectiveDate = [datetime]::Parse($Certificate.geteffectivedatestring())
+                    $ExpireDate = [datetime]::Parse($Certificate.getexpirationdatestring())
+
+                    # Calculate how many days until certificate expiration
+                    [int]$ExpiresIn = ($ExpireDate - $(get-date)).Days
+
+                    # Determine whether certificate is self-signed
+                    if ($Certificate.get_issuer().CompareTo($Certificate.get_subject())) 
+                    {
+                        $Selfsigned = 'False'
+                        write-verbose "Certificate Issued by CA"
+                    } 
+
+                    else 
+                    {
+                        $Selfsigned = 'True'
+                        write-verbose "Certificate is Selfsigned"
+                    }
+
+                    # Create PS Object containing certificate information
+                    $CertificateInfo = [ordered] @{
+                                        Hostname="$Hostname"; 
+                                        IPAddress="$IPAddress";
+                                        Port="$Port";
+                                        Subject="$($Certificate.get_subject())";
+                                        Issuer="$($Certificate.get_issuer())";
+                                        SelfSigned="$Selfsigned"
+                                        SerialNumber="$($Certificate.getserialnumberstring())";
+                                        KeySize="$($Certificate2.PublicKey.Key.KeySize)";
+                                        Algorithm="$($Certificate2.SignatureAlgorithm.FriendlyName)"
+                                        ValidFrom="$EffectiveDate";
+                                        Validto="$ExpireDate";
+                                        DaysUntilExpires="$ExpiresIn"
+                                    }
+
+                    $CertInfo = New-Object -Type PSObject -Prop $CertificateInfo   
+                } 
+
+                Catch 
+                {
+                    $Connection.Close()
+                    $Host.UI.WriteErrorLine("`nUnable to retrieve certificate information.`n$_.error`n")
+                }
+            }
+        }    
+    }
+    
+    Catch
+    {
+        write-verbose "Unable to connect to: $Target.`n$_.error"
+    }
+    
+    $CertInfo
+}
+<#
+.SYNOPSIS
+    Creates new IAM role.
+.DESCRIPTION
+    Checks whether the IAM role exists and if not creates it, setting path and applying the policy document.
+.PARAMETER RoleName
+    The name of the new IAM role being created.
+.PARAMETER RolePath
+    The path that will be assigned to the IAM role.
+.PARAMETER IAMPolicyDocument
+    The JSON formatted IAM policy document that will be used to create the IAM role.
+.PARAMETER ProfileName
+    The name of the AWS profile to use for the operation.
+.OUTPUTS
+    Returns $NewIAMRoleObj which is a PS object containing the following information:
+    AWSAccountNumber:       The AWS account number that contains the IAM user.
+    AWSAccountName:         The AWS account name that contains the IAM user.
+    RoleName:              The groupname of the new IAM group being created.
+    RolePath:                   The path of the new IAM group.
+.NOTES
+    NAME......:  New-AWSIAMRole
+    VERSION...:  1.0
+    AUTHOR....:  Dan Stewart
+    CREATED...:  2/12/15
+.EXAMPLE
+    New-AWSIAMRole -Rolename 'MYROLE' -IAMPolicyDocument $MyPolicyDocument
+    Checks for the IAM role MYROLE, if it is not found, creates the new IAM role using the default path (/A360/) and attaches the policy document.
+#>
+function New-AWSIAMRole
+{
+    [CmdletBinding()]
+     Param ( 
+            [Parameter(Mandatory=$true,HelpMessage="Enter the name of the new IAM role being created.")]
+            [ValidateNotNullOrEmpty()]
+            [string]
+            $RoleName,
+
+            [Parameter(Mandatory=$false,HelpMessage="Enter the path for the new IAM group, this is used to distinguish different account types. Default value will be set to '/GD/'")]
+            [ValidateNotNullOrEmpty()]
+            [string]
+            $RolePath = "/GD/",
+
+            [Parameter(Mandatory=$true,HelpMessage="Enter the path for the new IAM role, this is used to distinguish different account types. Default value will be set to '/A360/'")]
+            [ValidateNotNullOrEmpty()]
+            [string]
+            $TrustPolicy,
+
+            [Parameter(Mandatory=$true,HelpMessage="Enter the path for the new IAM role, this is used to distinguish different account types. Default value will be set to '/A360/'")]
+            [ValidateNotNullOrEmpty()]
+            [string]
+            $IAMRolePolicy,
+
+            [Parameter(Mandatory=$true,HelpMessage="Enter the name of the AWS profile to use for the operation.")]
+            [alias('P')]
+            [String]
+            $ProfileName
+        )
+
+        # Check whether role exists, if it does not create new role, set path and attach policy
+        $RoleExist = Get-IAMRoles | where {$_.RoleName -eq $RoleName }
+        
+        if ($RoleExist)
+        {
+            $Host.UI.WriteErrorLine("`nUnable to create IAM Role: $Rolename `nThe role already exists.`n") 
+            $RoleCreated = 'Error: Role Already Exists'
+            $IAMPolicyDocument = $False
+        }
+
+        else 
+        {
+            Try
+            {
+                $NewRole = New-IAMRole -RoleName $Rolename -AssumeRolePolicyDocument $TrustPolicy -Force
+                write-verbose "Created new IAM Role: $Rolename"
+                $RolePath = $($NewRole.path)
+                $RoleCreated = $True
+
+            Try
+            {
+                $Writepolicy = Write-IamRolePolicy -RoleName $Rolename -PolicyName $Rolename -PolicyDocument $IAMRolePolicy -ProfileName $ProfileName
+                write-verbose "Added policy to IAM Role:"
+                $IAMPolicyDocument = $True
+            }
+
+            Catch
+            {
+                $Host.UI.WriteErrorLine("`nUnable to policy to IAM Role.`n$_.error`n")
+                $IAMPolicyDocument = "Error: $_.error"
+            }  
+        }
+        
+        Catch
+        {
+            $Host.UI.WriteErrorLine("`nUnable to create IAM Role.`n$_.error`n")
+            $RoleCreated = "Error: $_.error"
+            $RolePath = 'N/A'
+        }
+    } 
+
+    # Return AWS account number
+    $RegexAccountNumber = $((Get-IAMUser -ProfileName $ProfileName).arn) -match "(\d+)" | Out-Null; 
+    $AccountNumber = $Matches[0] 
+
+    # Add all information to PS Object
+    $NewIAMRoleInfo = [ordered] @{
+                            AWSAccountNumber="$AccountNumber";
+                            AWSAccountName="$ProfileName";
+                            RoleName="$Rolename";
+                            RoleCreated="$RoleCreated";
+                            RolePath="$RolePath"
+                            AddedPolicy="$IAMPolicyDocument";                            
+                        }
+
+    $NewIAMRoleObj = New-Object -Type PSObject -Prop $NewIAMRoleInfo
+    $NewIAMRoleObj
 }
