@@ -1521,9 +1521,9 @@ function Find-AWSIAMUser
     The IAM groups that the user will be added to. For addition to multiple groups use a comma seperated list. (e.g A360_Users,A360_Manage_Own_Credentials) 
 .PARAMETER Path
     The path that will be assigned to the IAM user. This is used to differentiate user accounts during auditing (if the path is not set, the account was likely created manually and will likely not be configured correctly). Path 
-    can also be used to differentiate between users and service accounts if desired. The default path is '/A360/'.
-.PARAMETER NoAPIAccess
-    If the switch 'NoAPIAccess' is set then the account will be provisioned without a key pair for API access. Some users may only require console access.
+    can also be used to differentiate between users and service accounts if desired. There is no default but it can be useful to set.
+.PARAMETER APIKey
+    If the switch '$APIKey' is set then the account will be provisioned with a key pair for API access.
 .PARAMETER ConsoleAccess
     If the switch 'ConsolAaccess' is set then the account will be provisioned with console access, and a complex password configured. The output object will also contain the password and URL to log into the console generated from either the AWS Account alias (if it exists) or the account number. This is only required for user access, not for service accounts.
 .PARAMETER Passwordlength
@@ -1539,7 +1539,7 @@ function Find-AWSIAMUser
     Path:                   The path of the IAM user.
     ARN:                    The ARN of the IAM user.
     AddedToGroups:          The names of the IAM groups the new user is being added to.
-    APIAccess:              Whether API Keys were created.
+    APIKey:                 Whether API Keys were created.
     Key:                    The key of the API key pair for the user.
     Secret:                 The secret of the API key pair for the user.
     ConsoleAccess:          True/False as to whether console access is provisioned for the user.
@@ -1547,7 +1547,7 @@ function Find-AWSIAMUser
     ConsoleURL:             The URL used to access the AWS account console.
 .NOTES
     NAME......:  New-AWSIAMUser
-    VERSION...:  1.0
+    VERSION...:  1.1
     AUTHOR....:  Dan Stewart
     CREATED...:  10/1/14
 .EXAMPLE
@@ -1574,16 +1574,16 @@ function New-AWSIAMUser
         [string[]]
         $AddToGroups,
 
-        [Parameter(Mandatory=$false,HelpMessage="Enter the path for the IAM user, this is used to distinguish different account types. Default value will be set to '/A360/'")]
+        [Parameter(Mandatory=$false,HelpMessage="Enter the path for the IAM user, this is used to distinguish different account types. You can set a default value if required.'")]
         [ValidateNotNullOrEmpty()]
         [string]
-        $UserPath = '/A360/',  
+        $UserPath,  
 
-        [Parameter(Mandatory=$false,HelpMessage="If the switch 'NoAPIAccess' is set then the account will be provisioned without a key pair for API access. Some users may only need console access.")]
+        [Parameter(Mandatory=$false,HelpMessage="If the switch 'APIKey' is set then the account will be provisioned with a key pair for API access.")]
         [Switch]
-        $NoAPIAccess,
+        $APIKey,
 
-        [Parameter(Mandatory=$false,HelpMessage="If the switch 'ConsolAaccess' is set then the account will be provisioned with console access, and a complex password configured. The output object will also contain the password and URL to log into the console generated from either the AWS Account alias (if it exists) or the account number. This is only required for user access, not for service accounts.")]
+        [Parameter(Mandatory=$false,HelpMessage="If the switch 'ConsoleAccess' is set then the account will be provisioned with console access, and a complex password configured. The output object will also contain the password and URL to log into the console generated from either the AWS Account alias (if it exists) or the account number. This is only required for user access, not for service accounts.")]
         [Switch]
         $ConsoleAccess,
 
@@ -1595,6 +1595,7 @@ function New-AWSIAMUser
         [String]
         $ProfileName  
     ) 
+
     # Empty array to add PS objects to and return new IAM user information.
     $NewIAMUsers = @()
     
@@ -1614,6 +1615,7 @@ function New-AWSIAMUser
             $Userpath = "$($IAMUserExists.path)"
             $Userpath = 'N/A'
             $AddedToGroups = 'N/A'
+            
             if(!($AddToGroups))
             {
                 $AddedToGroups = 'N/A'
@@ -1663,92 +1665,97 @@ function New-AWSIAMUser
             
             Try
             {
-                # Create user and retrieve IAM keys
+                # Create IAM user
                 $NewUser = New-IAMUser -Path $UserPath -UserName $Username -ProfileName $ProfileName
-                $Secret = New-IAMAccessKey -UserName $UserName -ProfileName $ProfileName | Select -Expand SecretAccessKey
-                $Key = Get-IAMAccessKey $UserName -ProfileName $ProfileName | Select -Expand AccessKeyID
-                write-verbose "Created new IAM user: $UserName Path: $Userpath"
-                write-verbose "Created key: $Key for: $UserName"
                 $UserExists = $False
-                $APIAccess = $True
+                $APIAccess = $False
+                $Secret = ' - '
+                $Key = ' - '
             }
             
             Catch
             {
                 $Host.UI.WriteErrorLine("`nUnable to create new IAM User.`n$_.error`n")
                 $NewUser = "USER $Username NOT CREATED: $_.error"
+                Break
             } 
 
-        # Add to IAM groups
-        if ($AddToGroups)
-        {
-            $AddedToGroups = @()
-            $NotAddedToGroups = @()
-            $SplitAddToGroups = $AddToGroups -split "," 
-        
-            foreach ($AddToGroup in $SplitAddToGroups)
-            {           
-                $AddToGroup = $($AddToGroup.trim())
+            # Add to IAM groups
+            if ($AddToGroups)
+            {
+                $AddedToGroups = @()
+                $NotAddedToGroups = @()
+                $SplitAddToGroups = $AddToGroups -split "," 
+            
+                foreach ($AddToGroup in $SplitAddToGroups)
+                {           
+                    $AddToGroup = $($AddToGroup.trim())
 
-                $AlreadyMember = Get-IAMGroupForUser -UserName $Username -ProfileName $ProfileName | where {$_.GroupName -eq $AddToGroup }
+                    $AlreadyMember = Get-IAMGroupForUser -UserName $Username -ProfileName $ProfileName | where {$_.GroupName -eq $AddToGroup }
 
-                if ($AlreadyMember)
-                {
-                    $NotAddedToGroups += $AddToGroup + ' (Already Member)'
-                }
-
-                else 
-                {
-                    $GroupExist = Get-IAMGroups -ProfileName $ProfileName | where {$_.GroupName -eq $AddToGroup }
-
-                    if ($GroupExist)
+                    if ($AlreadyMember)
                     {
-                        Try
-                        {
-                            Add-IAMUserToGroup -UserName $Username -GroupName $AddToGroup -ProfileName $ProfileName
-                            write-verbose "Added IAM User to Group: $AddToGroup"
-                            $AddedToGroups += $AddToGroup
-                        }
-
-                        Catch
-                        {
-                            $Host.UI.WriteErrorLine("`nUnable to add IAM User to group: $AddToGroup.`n$_.error`n")
-                            $NotAddedToGroups += $AddToGroup + " (Error: $_.error)"
-                        } 
+                        $NotAddedToGroups += $AddToGroup + ' (Already Member)'
                     }
-                    
+
                     else 
                     {
-                        $Host.UI.WriteErrorLine("`nUnable to add IAM User to group: $AddToGroup because the group does not exist.`n")
-                        $NotAddedToGroups += $AddToGroup + ' (Does Not Exist)'
-                    }
-                }            
+                        $GroupExist = Get-IAMGroups -ProfileName $ProfileName | where {$_.GroupName -eq $AddToGroup }
+
+                        if ($GroupExist)
+                        {
+                            Try
+                            {
+                                Add-IAMUserToGroup -UserName $Username -GroupName $AddToGroup -ProfileName $ProfileName
+                                write-verbose "Added IAM User to Group: $AddToGroup"
+                                $AddedToGroups += $AddToGroup
+                            }
+
+                            Catch
+                            {
+                                $Host.UI.WriteErrorLine("`nUnable to add IAM User to group: $AddToGroup.`n$_.error`n")
+                                $NotAddedToGroups += $AddToGroup + " (Error: $_.error)"
+                            } 
+                        }
+                        
+                        else 
+                        {
+                            $Host.UI.WriteErrorLine("`nUnable to add IAM User to group: $AddToGroup because the group does not exist.`n")
+                            $NotAddedToGroups += $AddToGroup + ' (Does Not Exist)'
+                        }
+                    }            
+                }
+
+                $AddedToGroups = $AddedToGroups -join ","
+                $NotAddedToGroups = $NotAddedToGroups -join ","
+
+                if (!($AddedToGroups))
+                {
+                    $AddedToGroups = ' - '
+                }
+
+                if (!($NotAddedToGroups))
+                {
+                    $NotAddedToGroups = ' - '
+                }
             }
 
-            $AddedToGroups = $AddedToGroups -join ","
-            $NotAddedToGroups = $NotAddedToGroups -join ","
-
-            if (!($AddedToGroups))
+            else 
             {
-                $AddedToGroups = 'N/A'
+                $AddedToGroups = ' - '
+                $NotAddedToGroups = ' - '
             }
-        }
-
-        else 
-        {
-            $AddedToGroups = 'N/A'
-            $NotAddedToGroups = 'N/A'
-        }
-        
-            if ($NoAPIAccess)
+            
+            if ($APIKey)
             {        
                 Try 
                 {  
-                    Remove-IAMAccessKey -UserName $Username -AccessKeyId $Key -ProfileName $ProfileName -Force
-                    write-verbose "Removed API key: $Key for IAM User: $Username"
-                    $APIAccess = $False
-                    $Secret = ' - '
-                    $Key = ' - '
+                    # Create API keys if required
+                    $Secret = New-IAMAccessKey -UserName $UserName -ProfileName $ProfileName | Select -Expand SecretAccessKey
+                    $Key = Get-IAMAccessKey $UserName -ProfileName $ProfileName | Select -Expand AccessKeyID
+                    $APIAccess = $True
+                    write-verbose "Created new IAM user: $UserName Path: $Userpath"
+                    write-verbose "Created key: $Key for: $UserName"
                 }
 
                 Catch
@@ -1790,8 +1797,8 @@ function New-AWSIAMUser
 
             else 
             {
-                $Password = 'No Console Access'
-                $URL = 'No Console URL'
+                $Password = ' - '
+                $URL = ' - '
             }
 
         }
