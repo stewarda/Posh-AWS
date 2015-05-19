@@ -1769,7 +1769,7 @@ function New-AWSIAMUser
                 Try 
                 {     
                     # Generate random password, set console access        
-                    $Password = New-RandomComplexPassword -Length $Passwordlength
+                    $Password = New-ComplexPassword -Length $Passwordlength
                     $Console = New-IAMLoginProfile -UserName "$Username" -Password "$password" -ProfileName $ProfileName
                     write-verbose "Created console profile for IAM User: $UserName"
                 }
@@ -2365,7 +2365,7 @@ function Update-AWSIAMUser
                 Try 
                 {     
                     # Generate random password, set console access        
-                    $Password = New-RandomComplexPassword -Length $Passwordlength
+                    $Password = New-ComplexPassword -Length $Passwordlength
                     $ConsoleAccess = New-IAMLoginProfile -UserName "$Username" -Password "$password" -ProfileName $ProfileName
                     write-verbose "Created new console profile and set password"
                 }
@@ -2387,7 +2387,7 @@ function Update-AWSIAMUser
 
                 Try 
                 {  
-                    $Password = New-RandomComplexPassword -Length $Passwordlength
+                    $Password = New-ComplexPassword -Length $Passwordlength
                     $NewPassword = Update-IAMLoginProfile -UserName $Username -Password $Password -ProfileName $ProfileName
                     write-verbose "Reset IAM users password"                
                 }
